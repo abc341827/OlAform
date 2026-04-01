@@ -28,104 +28,209 @@
         /// </summary>
         private void InitializeComponent()
         {
-            components = new System.ComponentModel.Container();
-            this.lstActions = new System.Windows.Forms.ListBox();
-            this.btnAddMouse = new System.Windows.Forms.Button();
-            this.btnAddKey = new System.Windows.Forms.Button();
-            this.btnAddOCR = new System.Windows.Forms.Button();
-            this.designPanel = new System.Windows.Forms.Panel();
-            this.propertyGrid = new System.Windows.Forms.PropertyGrid();
-            this.SuspendLayout();
+            lstActions = new ListBox();
+            btnAddMouse = new Button();
+            btnAddKey = new Button();
+            btnAddOCR = new Button();
+            btnRun = new Button();
+            designPanel = new Panel();
+            propertyGrid = new PropertyGrid();
+            lblTargetHwnd = new Label();
+            txtTargetHwnd = new TextBox();
+            btnPickWindow = new Button();
+            btnBindWindow = new Button();
+            btnTestOcr = new Button();
+            lblBindStatus = new Label();
+            lblOcrResult = new Label();
+            txtOcrResult = new TextBox();
+            SuspendLayout();
             // 
             // lstActions
             // 
-            this.lstActions.Anchor = ((System.Windows.Forms.AnchorStyles)(((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Bottom)
-            | System.Windows.Forms.AnchorStyles.Left)));
-            this.lstActions.FormattingEnabled = true;
-            this.lstActions.ItemHeight = 15;
-            this.lstActions.Location = new System.Drawing.Point(12, 12);
-            this.lstActions.Name = "lstActions";
-            this.lstActions.Size = new System.Drawing.Size(180, 424);
-            this.lstActions.TabIndex = 0;
+            lstActions.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left;
+            lstActions.FormattingEnabled = true;
+            lstActions.ItemHeight = 17;
+            lstActions.Location = new Point(12, 12);
+            lstActions.Name = "lstActions";
+            lstActions.Size = new Size(180, 701);
+            lstActions.TabIndex = 0;
             // 
             // btnAddMouse
             // 
-            this.btnAddMouse.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Left)));
-            this.btnAddMouse.Location = new System.Drawing.Point(198, 12);
-            this.btnAddMouse.Name = "btnAddMouse";
-            this.btnAddMouse.Size = new System.Drawing.Size(120, 30);
-            this.btnAddMouse.TabIndex = 1;
-            this.btnAddMouse.Text = "Add Mouse";
-            this.btnAddMouse.UseVisualStyleBackColor = true;
-            this.btnAddMouse.Click += new System.EventHandler(this.btnAddMouse_Click);
+            btnAddMouse.Location = new Point(198, 12);
+            btnAddMouse.Name = "btnAddMouse";
+            btnAddMouse.Size = new Size(120, 30);
+            btnAddMouse.TabIndex = 1;
+            btnAddMouse.Text = "Add Mouse";
+            btnAddMouse.UseVisualStyleBackColor = true;
+            btnAddMouse.Click += btnAddMouse_Click;
             // 
             // btnAddKey
             // 
-            this.btnAddKey.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Left)));
-            this.btnAddKey.Location = new System.Drawing.Point(198, 48);
-            this.btnAddKey.Name = "btnAddKey";
-            this.btnAddKey.Size = new System.Drawing.Size(120, 30);
-            this.btnAddKey.TabIndex = 2;
-            this.btnAddKey.Text = "Add Key";
-            this.btnAddKey.UseVisualStyleBackColor = true;
-            this.btnAddKey.Click += new System.EventHandler(this.btnAddKey_Click);
+            btnAddKey.Location = new Point(198, 48);
+            btnAddKey.Name = "btnAddKey";
+            btnAddKey.Size = new Size(120, 30);
+            btnAddKey.TabIndex = 2;
+            btnAddKey.Text = "Add Key";
+            btnAddKey.UseVisualStyleBackColor = true;
+            btnAddKey.Click += btnAddKey_Click;
             // 
             // btnAddOCR
             // 
-            this.btnAddOCR.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Left)));
-            this.btnAddOCR.Location = new System.Drawing.Point(198, 84);
-            this.btnAddOCR.Name = "btnAddOCR";
-            this.btnAddOCR.Size = new System.Drawing.Size(120, 30);
-            this.btnAddOCR.TabIndex = 3;
-            this.btnAddOCR.Text = "Add OCR";
-            this.btnAddOCR.UseVisualStyleBackColor = true;
-            this.btnAddOCR.Click += new System.EventHandler(this.btnAddOCR_Click);
+            btnAddOCR.Location = new Point(198, 84);
+            btnAddOCR.Name = "btnAddOCR";
+            btnAddOCR.Size = new Size(120, 30);
+            btnAddOCR.TabIndex = 3;
+            btnAddOCR.Text = "Add OCR";
+            btnAddOCR.UseVisualStyleBackColor = true;
+            btnAddOCR.Click += btnAddOCR_Click;
+            // 
+            // btnRun
+            // 
+            btnRun.Location = new Point(198, 120);
+            btnRun.Name = "btnRun";
+            btnRun.Size = new Size(120, 30);
+            btnRun.TabIndex = 4;
+            btnRun.Text = "Run";
+            btnRun.UseVisualStyleBackColor = true;
+            btnRun.Click += btnRun_Click;
             // 
             // designPanel
             // 
-            this.designPanel.Anchor = ((System.Windows.Forms.AnchorStyles)((((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Bottom)
-            | System.Windows.Forms.AnchorStyles.Left)
-            | System.Windows.Forms.AnchorStyles.Right)));
-            this.designPanel.BackColor = System.Drawing.SystemColors.ControlLight;
-            this.designPanel.BorderStyle = System.Windows.Forms.BorderStyle.FixedSingle;
-            this.designPanel.Location = new System.Drawing.Point(324, 12);
-            this.designPanel.Name = "designPanel";
-            this.designPanel.Size = new System.Drawing.Size(364, 424);
-            this.designPanel.TabIndex = 4;
-            this.designPanel.MouseDown += new System.Windows.Forms.MouseEventHandler(this.designPanel_MouseDown);
-            this.designPanel.MouseMove += new System.Windows.Forms.MouseEventHandler(this.designPanel_MouseMove);
-            this.designPanel.MouseUp += new System.Windows.Forms.MouseEventHandler(this.designPanel_MouseUp);
+            designPanel.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
+            designPanel.BackColor = SystemColors.ControlLight;
+            designPanel.BorderStyle = BorderStyle.FixedSingle;
+            designPanel.Location = new Point(324, 12);
+            designPanel.Name = "designPanel";
+            designPanel.Size = new Size(733, 710);
+            designPanel.TabIndex = 5;
+            designPanel.MouseDown += designPanel_MouseDown;
+            designPanel.MouseMove += designPanel_MouseMove;
+            designPanel.MouseUp += designPanel_MouseUp;
             // 
             // propertyGrid
             // 
-            this.propertyGrid.Anchor = ((System.Windows.Forms.AnchorStyles)(((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Bottom)
-            | System.Windows.Forms.AnchorStyles.Right)));
-            this.propertyGrid.Location = new System.Drawing.Point(694, 12);
-            this.propertyGrid.Name = "propertyGrid";
-            this.propertyGrid.Size = new System.Drawing.Size(194, 424);
-            this.propertyGrid.TabIndex = 5;
+            propertyGrid.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Right;
+            propertyGrid.Location = new Point(1063, 12);
+            propertyGrid.Name = "propertyGrid";
+            propertyGrid.Size = new Size(194, 710);
+            propertyGrid.TabIndex = 6;
+            // 
+            // lblTargetHwnd
+            // 
+            lblTargetHwnd.AutoSize = true;
+            lblTargetHwnd.Location = new Point(198, 159);
+            lblTargetHwnd.Name = "lblTargetHwnd";
+            lblTargetHwnd.Size = new Size(90, 17);
+            lblTargetHwnd.TabIndex = 7;
+            lblTargetHwnd.Text = "Target HWND";
+            // 
+            // txtTargetHwnd
+            // 
+            txtTargetHwnd.Location = new Point(198, 177);
+            txtTargetHwnd.Name = "txtTargetHwnd";
+            txtTargetHwnd.Size = new Size(120, 23);
+            txtTargetHwnd.TabIndex = 8;
+            // 
+            // btnPickWindow
+            // 
+            btnPickWindow.Location = new Point(198, 206);
+            btnPickWindow.Name = "btnPickWindow";
+            btnPickWindow.Size = new Size(120, 30);
+            btnPickWindow.TabIndex = 9;
+            btnPickWindow.Text = "Pick Window";
+            btnPickWindow.UseVisualStyleBackColor = true;
+            btnPickWindow.MouseDown += btnPickWindow_MouseDown;
+            btnPickWindow.MouseUp += btnPickWindow_MouseUp;
+            // 
+            // btnBindWindow
+            // 
+            btnBindWindow.Location = new Point(198, 242);
+            btnBindWindow.Name = "btnBindWindow";
+            btnBindWindow.Size = new Size(120, 30);
+            btnBindWindow.TabIndex = 10;
+            btnBindWindow.Text = "Bind HWND";
+            btnBindWindow.UseVisualStyleBackColor = true;
+            btnBindWindow.Click += btnBindWindow_Click;
+            // 
+            // btnTestOcr
+            // 
+            btnTestOcr.Location = new Point(198, 278);
+            btnTestOcr.Name = "btnTestOcr";
+            btnTestOcr.Size = new Size(120, 30);
+            btnTestOcr.TabIndex = 11;
+            btnTestOcr.Text = "Test OCR";
+            btnTestOcr.UseVisualStyleBackColor = true;
+            btnTestOcr.Click += btnTestOcr_Click;
+            // 
+            // lblBindStatus
+            // 
+            lblBindStatus.Location = new Point(198, 311);
+            lblBindStatus.Name = "lblBindStatus";
+            lblBindStatus.Size = new Size(120, 164);
+            lblBindStatus.TabIndex = 12;
+            lblBindStatus.Text = "未绑定外部窗口";
+            // 
+            // lblOcrResult
+            // 
+            lblOcrResult.AutoSize = true;
+            lblOcrResult.Location = new Point(198, 475);
+            lblOcrResult.Name = "lblOcrResult";
+            lblOcrResult.Size = new Size(73, 17);
+            lblOcrResult.TabIndex = 13;
+            lblOcrResult.Text = "OCR Result";
+            // 
+            // txtOcrResult
+            // 
+            txtOcrResult.Location = new Point(198, 493);
+            txtOcrResult.Multiline = true;
+            txtOcrResult.Name = "txtOcrResult";
+            txtOcrResult.ReadOnly = true;
+            txtOcrResult.ScrollBars = ScrollBars.Vertical;
+            txtOcrResult.Size = new Size(120, 219);
+            txtOcrResult.TabIndex = 14;
             // 
             // Form1
             // 
-            this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
-            this.ClientSize = new System.Drawing.Size(900, 450);
-            this.Controls.Add(this.propertyGrid);
-            this.Controls.Add(this.designPanel);
-            this.Controls.Add(this.btnAddOCR);
-            this.Controls.Add(this.btnAddKey);
-            this.Controls.Add(this.btnAddMouse);
-            this.Controls.Add(this.lstActions);
-            this.Name = "Form1";
-            this.Text = "OLA Automation Configurator";
-            this.ResumeLayout(false);
+            AutoScaleDimensions = new SizeF(7F, 17F);
+            AutoScaleMode = AutoScaleMode.Font;
+            ClientSize = new Size(1269, 736);
+            Controls.Add(txtOcrResult);
+            Controls.Add(lblOcrResult);
+            Controls.Add(lblBindStatus);
+            Controls.Add(btnTestOcr);
+            Controls.Add(btnBindWindow);
+            Controls.Add(btnPickWindow);
+            Controls.Add(txtTargetHwnd);
+            Controls.Add(lblTargetHwnd);
+            Controls.Add(propertyGrid);
+            Controls.Add(designPanel);
+            Controls.Add(btnRun);
+            Controls.Add(btnAddOCR);
+            Controls.Add(btnAddKey);
+            Controls.Add(btnAddMouse);
+            Controls.Add(lstActions);
+            Name = "Form1";
+            Text = "OLA Automation Configurator";
+            ResumeLayout(false);
+            PerformLayout();
         }
 
         private System.Windows.Forms.ListBox lstActions;
         private System.Windows.Forms.Button btnAddMouse;
         private System.Windows.Forms.Button btnAddKey;
         private System.Windows.Forms.Button btnAddOCR;
+        private System.Windows.Forms.Button btnRun;
         private System.Windows.Forms.Panel designPanel;
         private System.Windows.Forms.PropertyGrid propertyGrid;
+        private System.Windows.Forms.Label lblTargetHwnd;
+        private System.Windows.Forms.TextBox txtTargetHwnd;
+        private System.Windows.Forms.Button btnPickWindow;
+        private System.Windows.Forms.Button btnBindWindow;
+        private System.Windows.Forms.Button btnTestOcr;
+        private System.Windows.Forms.Label lblBindStatus;
+        private System.Windows.Forms.Label lblOcrResult;
+        private System.Windows.Forms.TextBox txtOcrResult;
 
         #endregion
     }
