@@ -1,4 +1,6 @@
-﻿namespace OlAform
+﻿using System.Runtime.InteropServices;
+
+namespace OlAform
 {
     internal sealed class OlaWorker : IDisposable
     {
@@ -71,6 +73,15 @@
             {
                 ThrowIfNotBound();
                 _ola!.MoveTo(x, y);
+            });
+        }
+
+        public Task MoveRelativeAsync(int deltaX, int deltaY)
+        {
+            return InvokeAsync(() =>
+            {
+                ThrowIfNotBound();
+                _ola!.MoveR(deltaX, deltaY);
             });
         }
 
@@ -244,6 +255,47 @@
                 {
                     throw new InvalidOperationException($"截图失败。ErrorId={_ola.GetLastError()}, Error={_ola.GetLastErrorString()}");
                 }
+            });
+        }
+
+        public Task<byte[]> CaptureBmpBytesAsync(int x1, int y1, int x2, int y2)
+        {
+            return InvokeAsync(() =>
+            {
+                ThrowIfNotBound();
+
+                var result = _ola!.GetScreenDataBmp(x1, y1, x2, y2, out var dataPtr, out var dataLen);
+                if (result != 1 || dataPtr == 0 || dataLen <= 0)
+                {
+                    throw new InvalidOperationException($"截图读取失败。ErrorId={_ola.GetLastError()}, Error={_ola.GetLastErrorString()}");
+                }
+
+                try
+                {
+                    var bytes = new byte[dataLen];
+                    Marshal.Copy((IntPtr)dataPtr, bytes, 0, dataLen);
+                    return bytes;
+                }
+                finally
+                {
+                    _ola.FreeImageData(dataPtr);
+                }
+            });
+        }
+
+        public Task<Size> GetBoundWindowClientSizeAsync()
+        {
+            return InvokeAsync(() =>
+            {
+                ThrowIfNotBound();
+
+                var result = _ola!.GetClientSize(_boundWindowHandle, out var width, out var height);
+                if (result != 1)
+                {
+                    throw new InvalidOperationException($"获取窗口客户区大小失败。ErrorId={_ola.GetLastError()}, Error={_ola.GetLastErrorString()}");
+                }
+
+                return new Size(width, height);
             });
         }
 

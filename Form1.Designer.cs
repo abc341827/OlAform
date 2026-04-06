@@ -40,9 +40,15 @@
             btnPickWindow = new Button();
             btnBindWindow = new Button();
             btnTestOcr = new Button();
+            btnTrackTarget = new Button();
             lblBindStatus = new Label();
             lblOcrResult = new Label();
             txtOcrResult = new TextBox();
+            lblProjects = new Label();
+            cmbProjects = new ComboBox();
+            btnSaveProject = new Button();
+            btnLoadProject = new Button();
+            btnDeleteProject = new Button();
             SuspendLayout();
             // 
             // lstActions
@@ -50,9 +56,9 @@
             lstActions.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left;
             lstActions.FormattingEnabled = true;
             lstActions.ItemHeight = 17;
-            lstActions.Location = new Point(12, 12);
+            lstActions.Location = new Point(12, 46);
             lstActions.Name = "lstActions";
-            lstActions.Size = new Size(180, 701);
+            lstActions.Size = new Size(180, 667);
             lstActions.TabIndex = 0;
             // 
             // btnAddMouse
@@ -119,7 +125,7 @@
             // lblTargetHwnd
             // 
             lblTargetHwnd.AutoSize = true;
-            lblTargetHwnd.Location = new Point(198, 159);
+            lblTargetHwnd.Location = new Point(198, 321);
             lblTargetHwnd.Name = "lblTargetHwnd";
             lblTargetHwnd.Size = new Size(90, 17);
             lblTargetHwnd.TabIndex = 7;
@@ -127,14 +133,14 @@
             // 
             // txtTargetHwnd
             // 
-            txtTargetHwnd.Location = new Point(198, 177);
+            txtTargetHwnd.Location = new Point(198, 341);
             txtTargetHwnd.Name = "txtTargetHwnd";
             txtTargetHwnd.Size = new Size(120, 23);
             txtTargetHwnd.TabIndex = 8;
             // 
             // btnPickWindow
             // 
-            btnPickWindow.Location = new Point(198, 206);
+            btnPickWindow.Location = new Point(198, 370);
             btnPickWindow.Name = "btnPickWindow";
             btnPickWindow.Size = new Size(120, 30);
             btnPickWindow.TabIndex = 9;
@@ -145,7 +151,7 @@
             // 
             // btnBindWindow
             // 
-            btnBindWindow.Location = new Point(198, 242);
+            btnBindWindow.Location = new Point(198, 406);
             btnBindWindow.Name = "btnBindWindow";
             btnBindWindow.Size = new Size(120, 30);
             btnBindWindow.TabIndex = 10;
@@ -155,7 +161,7 @@
             // 
             // btnTestOcr
             // 
-            btnTestOcr.Location = new Point(198, 278);
+            btnTestOcr.Location = new Point(198, 442);
             btnTestOcr.Name = "btnTestOcr";
             btnTestOcr.Size = new Size(120, 30);
             btnTestOcr.TabIndex = 11;
@@ -163,41 +169,104 @@
             btnTestOcr.UseVisualStyleBackColor = true;
             btnTestOcr.Click += btnTestOcr_Click;
             // 
+            // btnTrackTarget
+            // 
+            btnTrackTarget.Location = new Point(198, 478);
+            btnTrackTarget.Name = "btnTrackTarget";
+            btnTrackTarget.Size = new Size(120, 30);
+            btnTrackTarget.TabIndex = 12;
+            btnTrackTarget.Text = "目标追踪";
+            btnTrackTarget.UseVisualStyleBackColor = true;
+            btnTrackTarget.Click += btnTrackTarget_Click;
+            // 
             // lblBindStatus
             // 
-            lblBindStatus.Location = new Point(198, 311);
+            lblBindStatus.Location = new Point(198, 514);
             lblBindStatus.Name = "lblBindStatus";
-            lblBindStatus.Size = new Size(120, 164);
-            lblBindStatus.TabIndex = 12;
+            lblBindStatus.Size = new Size(120, 72);
+            lblBindStatus.TabIndex = 13;
             lblBindStatus.Text = "未绑定外部窗口";
             // 
             // lblOcrResult
             // 
             lblOcrResult.AutoSize = true;
-            lblOcrResult.Location = new Point(198, 475);
+            lblOcrResult.Location = new Point(198, 593);
             lblOcrResult.Name = "lblOcrResult";
             lblOcrResult.Size = new Size(73, 17);
-            lblOcrResult.TabIndex = 13;
+            lblOcrResult.TabIndex = 14;
             lblOcrResult.Text = "OCR Result";
             // 
             // txtOcrResult
             // 
-            txtOcrResult.Location = new Point(198, 493);
+            txtOcrResult.Location = new Point(198, 613);
             txtOcrResult.Multiline = true;
             txtOcrResult.Name = "txtOcrResult";
             txtOcrResult.ReadOnly = true;
             txtOcrResult.ScrollBars = ScrollBars.Vertical;
-            txtOcrResult.Size = new Size(120, 219);
-            txtOcrResult.TabIndex = 14;
+            txtOcrResult.Size = new Size(120, 99);
+            txtOcrResult.TabIndex = 15;
+            // 
+            // lblProjects
+            // 
+            lblProjects.AutoSize = true;
+            lblProjects.Location = new Point(198, 159);
+            lblProjects.Name = "lblProjects";
+            lblProjects.Size = new Size(32, 17);
+            lblProjects.TabIndex = 15;
+            lblProjects.Text = "项目";
+            // 
+            // cmbProjects
+            // 
+            cmbProjects.FormattingEnabled = true;
+            cmbProjects.Location = new Point(198, 179);
+            cmbProjects.Name = "cmbProjects";
+            cmbProjects.Size = new Size(120, 25);
+            cmbProjects.TabIndex = 16;
+            // 
+            // btnSaveProject
+            // 
+            btnSaveProject.Location = new Point(198, 210);
+            btnSaveProject.Name = "btnSaveProject";
+            btnSaveProject.Size = new Size(120, 30);
+            btnSaveProject.TabIndex = 17;
+            btnSaveProject.Text = "保存项目";
+            btnSaveProject.UseVisualStyleBackColor = true;
+            btnSaveProject.Click += btnSaveProject_Click;
+            // 
+            // btnLoadProject
+            // 
+            btnLoadProject.Location = new Point(198, 246);
+            btnLoadProject.Name = "btnLoadProject";
+            btnLoadProject.Size = new Size(120, 30);
+            btnLoadProject.TabIndex = 18;
+            btnLoadProject.Text = "加载项目";
+            btnLoadProject.UseVisualStyleBackColor = true;
+            btnLoadProject.Click += btnLoadProject_Click;
+            // 
+            // btnDeleteProject
+            // 
+            btnDeleteProject.Location = new Point(198, 282);
+            btnDeleteProject.Name = "btnDeleteProject";
+            btnDeleteProject.Size = new Size(120, 30);
+            btnDeleteProject.TabIndex = 19;
+            btnDeleteProject.Text = "删除项目";
+            btnDeleteProject.UseVisualStyleBackColor = true;
+            btnDeleteProject.Click += btnDeleteProject_Click;
             // 
             // Form1
             // 
             AutoScaleDimensions = new SizeF(7F, 17F);
             AutoScaleMode = AutoScaleMode.Font;
             ClientSize = new Size(1269, 736);
+            Controls.Add(btnDeleteProject);
+            Controls.Add(btnLoadProject);
+            Controls.Add(btnSaveProject);
+            Controls.Add(cmbProjects);
+            Controls.Add(lblProjects);
             Controls.Add(txtOcrResult);
             Controls.Add(lblOcrResult);
             Controls.Add(lblBindStatus);
+            Controls.Add(btnTrackTarget);
             Controls.Add(btnTestOcr);
             Controls.Add(btnBindWindow);
             Controls.Add(btnPickWindow);
@@ -228,9 +297,15 @@
         private System.Windows.Forms.Button btnPickWindow;
         private System.Windows.Forms.Button btnBindWindow;
         private System.Windows.Forms.Button btnTestOcr;
+        private System.Windows.Forms.Button btnTrackTarget;
         private System.Windows.Forms.Label lblBindStatus;
         private System.Windows.Forms.Label lblOcrResult;
         private System.Windows.Forms.TextBox txtOcrResult;
+        private System.Windows.Forms.Label lblProjects;
+        private System.Windows.Forms.ComboBox cmbProjects;
+        private System.Windows.Forms.Button btnSaveProject;
+        private System.Windows.Forms.Button btnLoadProject;
+        private System.Windows.Forms.Button btnDeleteProject;
 
         #endregion
     }

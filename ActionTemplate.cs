@@ -2,11 +2,14 @@ namespace OlAform
 {
     internal sealed class ActionTemplate
     {
-        public ActionTemplate(string displayName, ScriptAction template)
+        public ActionTemplate(ActionCategory category, string displayName, ScriptAction template)
         {
+            Category = category;
             DisplayName = displayName;
             Template = template;
         }
+
+        public ActionCategory Category { get; }
 
         public string DisplayName { get; }
 
@@ -14,7 +17,12 @@ namespace OlAform
 
         public string Description => Template.Description;
 
-        public ScriptAction CreateAction() => Template.Clone();
+        public ScriptAction CreateAction()
+        {
+            var action = Template.Clone();
+            action.Name = ActionVisuals.GetDisplayName(action.ActionType);
+            return action;
+        }
 
         public override string ToString() => DisplayName;
     }

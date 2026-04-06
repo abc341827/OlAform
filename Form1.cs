@@ -1,13 +1,16 @@
-﻿using System.Drawing;
-using System.Globalization;
+﻿using System.Globalization;
+using System.Diagnostics;
 using System.Linq;
-using System.Text;
-using System.Text.RegularExpressions;
-
 namespace OlAform
 {
     public partial class Form1 : Form
     {
+        private const int TrackingRegionSize = 400;
+        private const float TrackingConfidenceThreshold = 0.25f;
+        private const float TrackingIouThreshold = 0.45f;
+        private const float TrackingMoveScale = 1.0f;
+        private const int TrackingDeadzonePixels = 3;
+        private const int TrackingLoopDelayMs = 12;
         private readonly List<WorkflowNode> _workflowRoots = new();
         private readonly List<ActionTemplate> _availableActionTemplates = new();
         private Control? _draggingControl;
@@ -21,11 +24,17 @@ namespace OlAform
         private readonly TreeView _treeActions = new();
         private readonly Label _lblAvailableActions = new();
         private readonly Label _lblWorkflowActions = new();
+        private readonly PictureBox _picDetectionPreview = new();
+        private TabPage? _tabDetectionPreview;
+        private CancellationTokenSource? _trackingCts;
+        private Task? _trackingTask;
+        private bool _isTrackingArmed;
         private bool _isPickingWindow;
         private long _hoverWindowHandle;
         private long _highlightedWindowHandle;
         private Rectangle _highlightedBounds = Rectangle.Empty;
         private bool _isRunningWorkflow;
+        private readonly ProjectStorage _projectStorage = new(AppContext.BaseDirectory);
 
         public Form1()
         {
@@ -39,12 +48,16 @@ namespace OlAform
 
             Load += Form1_Load;
             FormClosed += Form1_FormClosed;
+            Shown += (_, _) => ArrangeWorkflowLayout();
+            Resize += (_, _) => ArrangeWorkflowLayout();
         }
 
         private void Form1_Load(object? sender, EventArgs e)
         {
+            LoadProjectList();
             UpdateBindingStatus();
             RefreshWorkflowTree();
+            ArrangeWorkflowLayout();
         }
 
         private void Form1_FormClosed(object? sender, FormClosedEventArgs e)
@@ -53,6 +66,8 @@ namespace OlAform
             {
                 StopWindowPick(false);
                 _highlightOverlay.Close();
+                StopTracking(waitForCompletion: false);
+                _picDetectionPreview.Image?.Dispose();
                 _olaWorker.Dispose();
             }
             catch
@@ -60,14 +75,48 @@ namespace OlAform
             }
         }
 
-        private async Task BindTargetWindowAsync()
+        private async void btnTrackTarget_Click(object sender, EventArgs e)
         {
-            if (_targetWindowHandle == 0)
+            if (_isTrackingArmed)
+            {
+                StopTracking(waitForCompletion: false);
+                AppendOutput("目标追踪已手动停止。");
+                return;
+            }
+
+            try
+            {
+                await EnsureOlaReadyAsync();
+
+                var modelPath = Path.Combine(AppContext.BaseDirectory, "dawn1.onnx");
+                if (!File.Exists(modelPath))
+                {
+                    throw new FileNotFoundException("找不到追踪模型。", modelPath);
+                }
+
+                StartTracking(modelPath);
+                AppendOutput("目标追踪已就绪。按住鼠标左键开始，松开左键自动停止。");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message, "OLA", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private Task BindTargetWindowAsync()
+        {
+            return BindTargetWindowAsync(_targetWindowHandle);
+        }
+
+        private async Task BindTargetWindowAsync(long targetWindowHandle)
+        {
+            if (targetWindowHandle == 0)
             {
                 throw new InvalidOperationException("请先输入并绑定外部窗口句柄。");
             }
 
-            var version = await _olaWorker.BindWindowAsync(_targetWindowHandle);
+            var version = await _olaWorker.BindWindowAsync(targetWindowHandle);
+            _targetWindowHandle = targetWindowHandle;
             _isBound = true;
             Text = $"OLA Automation Configurator - {version}";
             UpdateBindingStatus();
@@ -90,11 +139,16 @@ namespace OlAform
 
         private void TreeActions_AfterSelect(object? sender, TreeViewEventArgs e)
         {
-            propertyGrid.SelectedObject = e.Node?.Tag is WorkflowNode node ? node.Action : null;
+            propertyGrid.SelectedObject = e.Node?.Tag is WorkflowNode node ? new ScriptActionPropertyGridAdapter(node.Action) : null;
         }
 
         private void PropertyGrid_PropertyValueChanged(object s, PropertyValueChangedEventArgs e)
         {
+            if (_treeActions.SelectedNode?.Tag is WorkflowNode node)
+            {
+                propertyGrid.SelectedObject = new ScriptActionPropertyGridAdapter(node.Action);
+            }
+
             RefreshWorkflowTree();
         }
 
@@ -103,7 +157,7 @@ namespace OlAform
             try
             {
                 StopWindowPick(false);
-                _targetWindowHandle = ParseWindowHandle(txtTargetHwnd.Text);
+                _targetWindowHandle = WorkflowExecutionHelper.ParseWindowHandle(txtTargetHwnd.Text);
 
                 await BindTargetWindowAsync();
 
@@ -141,14 +195,116 @@ namespace OlAform
         {
             try
             {
-                await ExecuteKeyPressAsync("A" ?? string.Empty);
-                //await EnsureOlaReadyAsync();
-                //var text = await ExecuteOcrAsync(100, 100, 100, 100);
-                //ShowOcrResult(100, 100, 100, 100, text);
+                using var fileDialog = new OpenFileDialog
+                {
+                    Title = "选择需要分析的图片",
+                    Filter = "图片文件|*.jpg;*.jpeg;*.png;*.bmp;*.webp|所有文件|*.*"
+                };
+
+                if (fileDialog.ShowDialog(this) != DialogResult.OK)
+                {
+                    return;
+                }
+
+                var modelPath = Path.Combine(AppContext.BaseDirectory, "dawn1.onnx");
+                using var analyzer = new YoloOnnxImageAnalyzer(modelPath);
+                var modelInfo = analyzer.GetModelInfo();
+                var analysis = analyzer.AnalyzeImageDetailed(fileDialog.FileName, 0.25f, 0.45f);
+                var detections = analysis.Detections;
+
+                var annotatedPath = Path.Combine(
+                    Path.GetDirectoryName(fileDialog.FileName) ?? AppContext.BaseDirectory,
+                    $"{Path.GetFileNameWithoutExtension(fileDialog.FileName)}.result{Path.GetExtension(fileDialog.FileName)}");
+
+                analyzer.SaveAnnotatedImage(fileDialog.FileName, annotatedPath);
+
+                ClearOutput();
+                AppendOutput($"模型: {modelPath}");
+                AppendOutput($"图片: {fileDialog.FileName}");
+                AppendOutput($"输入: {modelInfo.InputName} [{string.Join(", ", modelInfo.InputShape)}]");
+                AppendOutput($"输出: {modelInfo.OutputName} [{string.Join(", ", modelInfo.OutputShape)}]");
+                AppendOutput($"标签数: {modelInfo.Labels.Count}");
+                AppendOutput($"预处理模式: {analysis.Diagnostics.PreprocessMode}");
+                AppendOutput($"解析模式: {analysis.Diagnostics.ParserMode}");
+                AppendOutput($"预测数: {analysis.Diagnostics.Predictions}");
+                AppendOutput($"属性数: {analysis.Diagnostics.Attributes}");
+                AppendOutput($"包含 Objectness: {analysis.Diagnostics.HasObjectness}");
+                AppendOutput($"最大 Objectness: {analysis.Diagnostics.MaxObjectness:F6}");
+                AppendOutput($"最大类别分数: {analysis.Diagnostics.MaxClassScore:F6}");
+                AppendOutput($"最大综合分数: {analysis.Diagnostics.MaxConfidence:F6}");
+                AppendOutput($"检测结果数量: {detections.Count}");
+
+                foreach (var detection in detections)
+                {
+                    AppendOutput($"- {detection.Label} | 分数 {detection.Confidence:F3} | 框 [{detection.X1:F0}, {detection.Y1:F0}, {detection.X2:F0}, {detection.Y2:F0}]");
+                }
+
+                AppendOutput($"标注结果已保存: {annotatedPath}");
+                ShowDetectionPreview(annotatedPath);
             }
             catch (Exception ex)
             {
                 MessageBox.Show(ex.Message, "OLA", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void btnSaveProject_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                var projectName = cmbProjects.Text.Trim();
+                if (string.IsNullOrWhiteSpace(projectName))
+                {
+                    throw new InvalidOperationException("请输入项目名称。");
+                }
+
+                SaveProject(projectName);
+                LoadProjectList(projectName);
+                MessageBox.Show($"项目已保存: {projectName}", "项目", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message, "项目", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void btnLoadProject_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                var projectName = cmbProjects.Text.Trim();
+                if (string.IsNullOrWhiteSpace(projectName))
+                {
+                    throw new InvalidOperationException("请选择要加载的项目。");
+                }
+
+                LoadProject(projectName);
+                MessageBox.Show($"项目已加载: {projectName}", "项目", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message, "项目", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void btnDeleteProject_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                var projectName = cmbProjects.Text.Trim();
+                if (string.IsNullOrWhiteSpace(projectName))
+                {
+                    throw new InvalidOperationException("请选择要删除的项目。");
+                }
+
+                _projectStorage.Delete(projectName);
+
+                LoadProjectList();
+                MessageBox.Show($"项目已删除: {projectName}", "项目", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message, "项目", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
@@ -192,42 +348,8 @@ namespace OlAform
         private void AddAction(ScriptAction action, TreeNode? targetNode = null, bool addAsChild = false)
         {
             var workflowNode = new WorkflowNode { Action = action.Clone() };
-            InsertWorkflowNode(workflowNode, targetNode, addAsChild);
+            WorkflowTreeService.InsertWorkflowNode(_workflowRoots, workflowNode, targetNode, addAsChild);
             RefreshWorkflowTree(workflowNode.Id);
-        }
-
-        private void InsertWorkflowNode(WorkflowNode node, TreeNode? targetNode, bool addAsChild)
-        {
-            if (targetNode?.Tag is not WorkflowNode targetWorkflowNode)
-            {
-                _workflowRoots.Add(node);
-                return;
-            }
-
-            if (addAsChild && CanContainChildren(targetWorkflowNode.Action.ActionType))
-            {
-                if (node.Action.ActionType == ActionType.Else && targetWorkflowNode.Action.ActionType != ActionType.If)
-                {
-                    throw new InvalidOperationException("Else 只能添加到 If 步骤下。");
-                }
-
-                if (node.Action.ActionType == ActionType.Else && targetWorkflowNode.Children.Any(c => c.Action.ActionType == ActionType.Else))
-                {
-                    throw new InvalidOperationException("每个 If 步骤只能包含一个 Else 分支。");
-                }
-
-                targetWorkflowNode.Children.Add(node);
-                return;
-            }
-
-            var siblings = GetSiblingList(targetNode);
-            var index = siblings.IndexOf(targetWorkflowNode);
-            siblings.Insert(index + 1, node);
-        }
-
-        private static bool CanContainChildren(ActionType actionType)
-        {
-            return actionType is ActionType.If or ActionType.Else or ActionType.LoopStart;
         }
 
         private void RefreshDesignPanelItems()
@@ -318,12 +440,12 @@ namespace OlAform
 
         private async Task RunActionsAsync()
         {
-            await EnsureOlaReadyAsync();
             ClearOutput();
 
-            var executionActions = FlattenWorkflow(_workflowRoots);
+            var executionActions = WorkflowTreeService.FlattenWorkflow(_workflowRoots);
             var variables = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            var stepIndex = BuildStepIndex(executionActions);
+            var windowObjects = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+            var stepIndex = WorkflowExecutionHelper.BuildStepIndex(executionActions);
             var loopStack = new Stack<(int StartIndex, int EndIndex, int RepeatCount, int Iteration, string VariableName)>();
             var callStack = new Stack<int>();
 
@@ -333,20 +455,28 @@ namespace OlAform
                 var a = executionActions[i];
                 AppendOutput($"[{i + 1}] {a}");
 
+                if (a.ActionType != ActionType.BindWindow && WorkflowExecutionHelper.RequiresBoundWindow(a.ActionType))
+                {
+                    await EnsureActionWindowContextAsync(a, variables, windowObjects);
+                }
+
                 switch (a.ActionType)
                 {
+                    case ActionType.BindWindow:
+                        await ExecuteBindWindowStepAsync(a, variables, windowObjects);
+                        break;
                     case ActionType.SetVariable:
-                        SetVariable(variables, a.OutputVariable, ResolveValue(a.TextValue, variables));
+                        WorkflowExecutionHelper.SetVariable(variables, a.OutputVariable, WorkflowExecutionHelper.ResolveValue(a.TextValue, variables));
                         break;
                     case ActionType.If:
-                        if (!EvaluateCondition(a, variables))
+                        if (!WorkflowExecutionHelper.EvaluateCondition(a, variables))
                         {
-                            i = FindElseOrEndIfIndex(executionActions, i) + 1;
+                            i = WorkflowExecutionHelper.FindElseOrEndIfIndex(executionActions, i) + 1;
                             continue;
                         }
                         break;
                     case ActionType.Else:
-                        i = FindEndIfIndex(executionActions, i) + 1;
+                        i = WorkflowExecutionHelper.FindEndIfIndex(executionActions, i) + 1;
                         continue;
                     case ActionType.EndIf:
                         break;
@@ -355,15 +485,15 @@ namespace OlAform
                             var repeatCount = Math.Max(0, a.RepeatCount);
                             if (repeatCount <= 0)
                             {
-                                i = FindMatchingEndLoopIndex(executionActions, i) + 1;
+                                i = WorkflowExecutionHelper.FindMatchingEndLoopIndex(executionActions, i) + 1;
                                 continue;
                             }
 
                             if (loopStack.Count == 0 || loopStack.Peek().StartIndex != i)
                             {
                                 var variableName = a.OutputVariable ?? string.Empty;
-                                loopStack.Push((i, FindMatchingEndLoopIndex(executionActions, i), repeatCount, 0, variableName));
-                                SetVariable(variables, variableName, "1");
+                                loopStack.Push((i, WorkflowExecutionHelper.FindMatchingEndLoopIndex(executionActions, i), repeatCount, 0, variableName));
+                                WorkflowExecutionHelper.SetVariable(variables, variableName, "1");
                             }
                         }
                         break;
@@ -384,7 +514,7 @@ namespace OlAform
                             {
                                 var nextLoop = (StartIndex: loop.StartIndex, EndIndex: loop.EndIndex, RepeatCount: loop.RepeatCount, Iteration: loop.Iteration + 1, VariableName: loop.VariableName);
                                 loopStack.Push(nextLoop);
-                                SetVariable(variables, loop.VariableName, (nextLoop.Iteration + 1).ToString(CultureInfo.InvariantCulture));
+                                WorkflowExecutionHelper.SetVariable(variables, loop.VariableName, (nextLoop.Iteration + 1).ToString(CultureInfo.InvariantCulture));
                                 i = loop.StartIndex + 1;
                                 continue;
                             }
@@ -402,11 +532,11 @@ namespace OlAform
                             continue;
                         }
                     case ActionType.GotoStep:
-                        i = ResolveTargetIndex(a, variables, stepIndex);
+                        i = WorkflowExecutionHelper.ResolveTargetIndex(a, variables, stepIndex);
                         continue;
                     case ActionType.CallStep:
                         callStack.Push(i + 1);
-                        i = ResolveTargetIndex(a, variables, stepIndex);
+                        i = WorkflowExecutionHelper.ResolveTargetIndex(a, variables, stepIndex);
                         continue;
                     case ActionType.ReturnStep:
                         if (callStack.Count == 0)
@@ -453,13 +583,13 @@ namespace OlAform
                         await _olaWorker.WheelDownAsync();
                         break;
                     case ActionType.KeyPress:
-                        await ExecuteKeyPressAsync(ResolveValue(a.Key, variables));
+                        await ExecuteKeyPressAsync(WorkflowExecutionHelper.ResolveValue(a.Key, variables));
                         break;
                     case ActionType.InputText:
-                        await ExecuteTextInputAsync(ResolveValue(a.TextValue, variables));
+                        await ExecuteTextInputAsync(WorkflowExecutionHelper.ResolveValue(a.TextValue, variables));
                         break;
                     case ActionType.SetClipboard:
-                        await ExecuteSetClipboardAsync(ResolveValue(a.TextValue, variables));
+                        await ExecuteSetClipboardAsync(WorkflowExecutionHelper.ResolveValue(a.TextValue, variables));
                         break;
                     case ActionType.SendPaste:
                         await _olaWorker.SendPasteAsync();
@@ -469,7 +599,7 @@ namespace OlAform
                             var text = await ExecuteOcrAsync(a.X, a.Y, a.Width, a.Height);
                             ShowOcrResult(a.X, a.Y, a.Width, a.Height, text);
                             AppendOutput($"OCR => {text}");
-                            SetVariable(variables, a.OutputVariable, text);
+                            WorkflowExecutionHelper.SetVariable(variables, a.OutputVariable, text);
                             break;
                         }
                     case ActionType.FindImage:
@@ -566,33 +696,104 @@ namespace OlAform
             AppendOutput($"Drag => ({action.X},{action.Y}) -> ({action.EndX},{action.EndY})");
         }
 
-        private static long ParseWindowHandle(string input)
+        private async Task ExecuteBindWindowStepAsync(ScriptAction action, Dictionary<string, string> variables, Dictionary<string, long> windowObjects)
         {
-            var value = input.Trim();
-            if (string.IsNullOrWhiteSpace(value))
+            var objectName = action.OutputVariable?.Trim();
+            if (string.IsNullOrWhiteSpace(objectName))
             {
-                throw new InvalidOperationException("请输入外部窗口句柄。支持十进制或 0x 开头的十六进制。");
+                throw new InvalidOperationException("Bind Window 步骤需要填写 Output Variable。该变量名将作为窗口对象名。");
             }
 
-            if (value.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            var windowHandle = ResolveBindWindowHandle(action, variables);
+
+            await BindTargetWindowAsync(windowHandle);
+
+            windowObjects[objectName] = windowHandle;
+            WorkflowExecutionHelper.SetVariable(variables, objectName, $"0x{windowHandle:X}");
+            WorkflowExecutionHelper.SetVariable(variables, $"{objectName}.Handle", $"0x{windowHandle:X}");
+            AppendOutput($"BindWindow => {objectName} -> 0x{windowHandle:X}");
+        }
+
+        private static long ResolveBindWindowHandle(ScriptAction action, IReadOnlyDictionary<string, string> variables)
+        {
+            return action.BindWindowResolveMode switch
             {
-                if (long.TryParse(value[2..], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var hexValue))
+                BindWindowResolveMode.DirectHandle => ResolveBindWindowHandleFromText(action, variables),
+                BindWindowResolveMode.WindowFromPoint => ResolveBindWindowHandleFromPoint(action),
+                BindWindowResolveMode.ProcessName => ResolveBindWindowHandleFromProcess(action, variables),
+                _ => throw new InvalidOperationException($"不支持的窗口绑定方式: {action.BindWindowResolveMode}")
+            };
+        }
+
+        private static long ResolveBindWindowHandleFromText(ScriptAction action, IReadOnlyDictionary<string, string> variables)
+        {
+            var resolvedHandleText = WorkflowExecutionHelper.ResolveValue(action.WindowHandle, variables);
+            return WorkflowExecutionHelper.ParseWindowHandle(resolvedHandleText);
+        }
+
+        private static long ResolveBindWindowHandleFromPoint(ScriptAction action)
+        {
+            var hwnd = NativeMethods.WindowFromPoint(new NativeMethods.POINT(new Point(action.X, action.Y)));
+            if (hwnd == IntPtr.Zero)
+            {
+                throw new InvalidOperationException($"指定坐标未找到窗口: ({action.X},{action.Y})");
+            }
+
+            if (action.UseRootWindow)
+            {
+                hwnd = NativeMethods.GetAncestor(hwnd, NativeMethods.GA_ROOT);
+            }
+
+            if (hwnd == IntPtr.Zero)
+            {
+                throw new InvalidOperationException($"指定坐标未找到可绑定的根窗口: ({action.X},{action.Y})");
+            }
+
+            return hwnd.ToInt64();
+        }
+
+        private static long ResolveBindWindowHandleFromProcess(ScriptAction action, IReadOnlyDictionary<string, string> variables)
+        {
+            var processName = WorkflowExecutionHelper.ResolveValue(action.ProcessName, variables).Trim();
+            if (string.IsNullOrWhiteSpace(processName))
+            {
+                throw new InvalidOperationException("Bind Window 使用进程名模式时必须填写 Process Name。");
+            }
+
+            var normalizedName = Path.GetFileNameWithoutExtension(processName);
+            var handle = Process.GetProcessesByName(normalizedName)
+                .Select(process => process.MainWindowHandle)
+                .FirstOrDefault(windowHandle => windowHandle != IntPtr.Zero);
+
+            if (handle == IntPtr.Zero)
+            {
+                throw new InvalidOperationException($"未找到进程窗口: {processName}");
+            }
+
+            return handle.ToInt64();
+        }
+
+        private async Task EnsureActionWindowContextAsync(ScriptAction action, IReadOnlyDictionary<string, string> variables, IDictionary<string, long> windowObjects)
+        {
+            var targetObject = WorkflowExecutionHelper.ResolveValue(action.TargetObject, variables).Trim();
+            if (string.IsNullOrWhiteSpace(targetObject))
+            {
+                await EnsureOlaReadyAsync();
+                return;
+            }
+
+            if (!windowObjects.TryGetValue(targetObject, out var windowHandle))
+            {
+                if (!variables.TryGetValue(targetObject, out var rawHandle) || string.IsNullOrWhiteSpace(rawHandle))
                 {
-                    return hexValue;
+                    throw new InvalidOperationException($"未找到窗口对象变量: {targetObject}");
                 }
+
+                windowHandle = WorkflowExecutionHelper.ParseWindowHandle(rawHandle);
+                windowObjects[targetObject] = windowHandle;
             }
 
-            if (long.TryParse(value, out var decimalValue))
-            {
-                return decimalValue;
-            }
-
-            if (long.TryParse(value, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var hexWithoutPrefix))
-            {
-                return hexWithoutPrefix;
-            }
-
-            throw new InvalidOperationException("窗口句柄格式不正确，请输入十进制或十六进制句柄值。");
+            await BindTargetWindowAsync(windowHandle);
         }
 
         private async Task ExecuteClickImageAsync(ScriptAction action, Dictionary<string, string> variables)
@@ -607,7 +808,7 @@ namespace OlAform
             var clickY = result.Y + Math.Max(1, result.Height) / 2;
             await _olaWorker.LeftClickAsync(clickX, clickY);
             AppendOutput($"ClickImage => ({clickX},{clickY})");
-            SetMatchResultVariables(variables, action.OutputVariable, result);
+            WorkflowExecutionHelper.SetMatchResultVariables(variables, action.OutputVariable, result);
         }
 
         private async Task ExecuteWaitImageAsync(ScriptAction action, Dictionary<string, string> variables)
@@ -622,7 +823,7 @@ namespace OlAform
                 if (result.MatchState)
                 {
                     AppendOutput($"WaitImage => 命中 X={result.X}, Y={result.Y}");
-                    SetMatchResultVariables(variables, action.OutputVariable, result);
+                    WorkflowExecutionHelper.SetMatchResultVariables(variables, action.OutputVariable, result);
                     return;
                 }
 
@@ -642,7 +843,7 @@ namespace OlAform
             }
 
             AppendOutput($"FindColor => 命中 X={point.Value.X}, Y={point.Value.Y}");
-            SetPointVariables(variables, action.OutputVariable, point.Value);
+            WorkflowExecutionHelper.SetPointVariables(variables, action.OutputVariable, point.Value);
         }
 
         private async Task ExecuteWaitColorAsync(ScriptAction action, Dictionary<string, string> variables)
@@ -657,7 +858,7 @@ namespace OlAform
                 if (point is not null)
                 {
                     AppendOutput($"WaitColor => 命中 X={point.Value.X}, Y={point.Value.Y}");
-                    SetPointVariables(variables, action.OutputVariable, point.Value);
+                    WorkflowExecutionHelper.SetPointVariables(variables, action.OutputVariable, point.Value);
                     return;
                 }
 
@@ -677,12 +878,12 @@ namespace OlAform
 
             await _olaWorker.LeftClickAsync(point.Value.X, point.Value.Y);
             AppendOutput($"ClickColor => ({point.Value.X},{point.Value.Y})");
-            SetPointVariables(variables, action.OutputVariable, point.Value);
+            WorkflowExecutionHelper.SetPointVariables(variables, action.OutputVariable, point.Value);
         }
 
         private async Task ExecuteCaptureAsync(ScriptAction action, IReadOnlyDictionary<string, string> variables)
         {
-            var outputPath = ResolveValue(action.ImagePath, variables);
+            var outputPath = WorkflowExecutionHelper.ResolveValue(action.ImagePath, variables);
             if (string.IsNullOrWhiteSpace(outputPath))
             {
                 throw new InvalidOperationException("截图步骤缺少输出文件路径。请在 Image Path 中填写目标路径。");
@@ -696,7 +897,7 @@ namespace OlAform
 
         private async Task<MatchResult> FindImageAsync(ScriptAction action, IReadOnlyDictionary<string, string> variables)
         {
-            var imagePath = ResolveValue(action.ImagePath, variables);
+            var imagePath = WorkflowExecutionHelper.ResolveValue(action.ImagePath, variables);
             if (string.IsNullOrWhiteSpace(imagePath))
             {
                 throw new InvalidOperationException("找图步骤缺少 Image Path 参数。");
@@ -710,8 +911,8 @@ namespace OlAform
 
         private async Task<Point?> FindColorAsync(ScriptAction action, IReadOnlyDictionary<string, string> variables)
         {
-            var colorStart = ResolveValue(action.ColorStart, variables);
-            var colorEnd = ResolveValue(action.ColorEnd, variables);
+            var colorStart = WorkflowExecutionHelper.ResolveValue(action.ColorStart, variables);
+            var colorEnd = WorkflowExecutionHelper.ResolveValue(action.ColorEnd, variables);
             if (string.IsNullOrWhiteSpace(colorStart) || string.IsNullOrWhiteSpace(colorEnd))
             {
                 throw new InvalidOperationException("颜色步骤缺少 Color Start 或 Color End 参数。");
@@ -722,249 +923,6 @@ namespace OlAform
             return await _olaWorker.FindColorAsync(action.X, action.Y, x2, y2, colorStart, colorEnd, action.SearchDirection);
         }
 
-        private static List<ScriptAction> FlattenWorkflow(IEnumerable<WorkflowNode> nodes)
-        {
-            var result = new List<ScriptAction>();
-            foreach (var node in nodes)
-            {
-                FlattenWorkflowNode(node, result);
-            }
-
-            return result;
-        }
-
-        private static void FlattenWorkflowNode(WorkflowNode node, ICollection<ScriptAction> result)
-        {
-            switch (node.Action.ActionType)
-            {
-                case ActionType.If:
-                    result.Add(node.Action.Clone());
-
-                    var elseNode = node.Children.FirstOrDefault(c => c.Action.ActionType == ActionType.Else);
-                    foreach (var child in node.Children)
-                    {
-                        if (ReferenceEquals(child, elseNode))
-                        {
-                            break;
-                        }
-
-                        FlattenWorkflowNode(child, result);
-                    }
-
-                    if (elseNode is not null)
-                    {
-                        result.Add(elseNode.Action.Clone());
-                        foreach (var child in elseNode.Children)
-                        {
-                            FlattenWorkflowNode(child, result);
-                        }
-                    }
-
-                    result.Add(new ScriptAction { Name = "End If", ActionType = ActionType.EndIf, Description = "Auto generated by tree workflow." });
-                    break;
-
-                case ActionType.LoopStart:
-                    result.Add(node.Action.Clone());
-                    foreach (var child in node.Children)
-                    {
-                        FlattenWorkflowNode(child, result);
-                    }
-                    result.Add(new ScriptAction { Name = "End Loop", ActionType = ActionType.EndLoop, Description = "Auto generated by tree workflow." });
-                    break;
-
-                case ActionType.Else:
-                    result.Add(node.Action.Clone());
-                    foreach (var child in node.Children)
-                    {
-                        FlattenWorkflowNode(child, result);
-                    }
-                    break;
-
-                default:
-                    result.Add(node.Action.Clone());
-                    break;
-            }
-        }
-
-        private Dictionary<string, int> BuildStepIndex(IReadOnlyList<ScriptAction> actions)
-        {
-            var result = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            for (var index = 0; index < actions.Count; index++)
-            {
-                var key = GetStepKey(actions[index]);
-                if (!string.IsNullOrWhiteSpace(key) && !result.ContainsKey(key))
-                {
-                    result[key] = index;
-                }
-            }
-
-            return result;
-        }
-
-        private static string GetStepKey(ScriptAction action)
-        {
-            return string.IsNullOrWhiteSpace(action.StepId) ? action.Name : action.StepId!;
-        }
-
-        private static string ResolveValue(string? template, IReadOnlyDictionary<string, string> variables)
-        {
-            if (string.IsNullOrEmpty(template))
-            {
-                return string.Empty;
-            }
-
-            return Regex.Replace(template, "\\$\\{(?<name>[^}]+)\\}", match =>
-            {
-                var name = match.Groups["name"].Value;
-                return variables.TryGetValue(name, out var value) ? value : string.Empty;
-            });
-        }
-
-        private static void SetVariable(IDictionary<string, string> variables, string? name, string? value)
-        {
-            if (string.IsNullOrWhiteSpace(name))
-            {
-                return;
-            }
-
-            variables[name] = value ?? string.Empty;
-        }
-
-        private static void SetPointVariables(IDictionary<string, string> variables, string? name, Point point)
-        {
-            if (string.IsNullOrWhiteSpace(name))
-            {
-                return;
-            }
-
-            variables[name] = $"{point.X},{point.Y}";
-            variables[$"{name}.X"] = point.X.ToString(CultureInfo.InvariantCulture);
-            variables[$"{name}.Y"] = point.Y.ToString(CultureInfo.InvariantCulture);
-        }
-
-        private static void SetMatchResultVariables(IDictionary<string, string> variables, string? name, MatchResult result)
-        {
-            if (string.IsNullOrWhiteSpace(name))
-            {
-                return;
-            }
-
-            variables[name] = result.MatchState ? $"{result.X},{result.Y},{result.Width},{result.Height}" : string.Empty;
-            variables[$"{name}.MatchState"] = result.MatchState.ToString();
-            variables[$"{name}.X"] = result.X.ToString(CultureInfo.InvariantCulture);
-            variables[$"{name}.Y"] = result.Y.ToString(CultureInfo.InvariantCulture);
-            variables[$"{name}.Width"] = result.Width.ToString(CultureInfo.InvariantCulture);
-            variables[$"{name}.Height"] = result.Height.ToString(CultureInfo.InvariantCulture);
-            variables[$"{name}.Score"] = result.MatchVal.ToString(CultureInfo.InvariantCulture);
-        }
-
-        private bool EvaluateCondition(ScriptAction action, IReadOnlyDictionary<string, string> variables)
-        {
-            var left = ResolveValue(action.ConditionLeft, variables);
-            var right = ResolveValue(action.ConditionRight, variables);
-
-            return action.ConditionOperator switch
-            {
-                ConditionOperatorType.Equals => string.Equals(left, right, StringComparison.OrdinalIgnoreCase),
-                ConditionOperatorType.NotEquals => !string.Equals(left, right, StringComparison.OrdinalIgnoreCase),
-                ConditionOperatorType.Contains => left.Contains(right, StringComparison.OrdinalIgnoreCase),
-                ConditionOperatorType.NotContains => !left.Contains(right, StringComparison.OrdinalIgnoreCase),
-                ConditionOperatorType.StartsWith => left.StartsWith(right, StringComparison.OrdinalIgnoreCase),
-                ConditionOperatorType.EndsWith => left.EndsWith(right, StringComparison.OrdinalIgnoreCase),
-                ConditionOperatorType.GreaterThan => CompareAsNumber(left, right) > 0,
-                ConditionOperatorType.GreaterThanOrEqual => CompareAsNumber(left, right) >= 0,
-                ConditionOperatorType.LessThan => CompareAsNumber(left, right) < 0,
-                ConditionOperatorType.LessThanOrEqual => CompareAsNumber(left, right) <= 0,
-                ConditionOperatorType.IsEmpty => string.IsNullOrWhiteSpace(left),
-                ConditionOperatorType.IsNotEmpty => !string.IsNullOrWhiteSpace(left),
-                _ => false
-            };
-        }
-
-        private static int CompareAsNumber(string left, string right)
-        {
-            var leftIsNumber = double.TryParse(left, NumberStyles.Any, CultureInfo.InvariantCulture, out var leftNumber);
-            var rightIsNumber = double.TryParse(right, NumberStyles.Any, CultureInfo.InvariantCulture, out var rightNumber);
-
-            return leftIsNumber && rightIsNumber
-                ? leftNumber.CompareTo(rightNumber)
-                : string.Compare(left, right, StringComparison.OrdinalIgnoreCase);
-        }
-
-        private int ResolveTargetIndex(ScriptAction action, IReadOnlyDictionary<string, string> variables, IReadOnlyDictionary<string, int> stepIndex)
-        {
-            var target = ResolveValue(action.TargetStep, variables);
-            if (string.IsNullOrWhiteSpace(target) || !stepIndex.TryGetValue(target, out var index))
-            {
-                throw new InvalidOperationException($"未找到目标步骤: {action.TargetStep}");
-            }
-
-            return index;
-        }
-
-        private int FindElseOrEndIfIndex(IReadOnlyList<ScriptAction> actions, int ifIndex)
-        {
-            var depth = 0;
-            for (var index = ifIndex + 1; index < actions.Count; index++)
-            {
-                switch (actions[index].ActionType)
-                {
-                    case ActionType.If:
-                        depth++;
-                        break;
-                    case ActionType.EndIf when depth == 0:
-                    case ActionType.Else when depth == 0:
-                        return index;
-                    case ActionType.EndIf:
-                        depth--;
-                        break;
-                }
-            }
-
-            throw new InvalidOperationException("If 步骤缺少匹配的 Else 或 EndIf。");
-        }
-
-        private int FindEndIfIndex(IReadOnlyList<ScriptAction> actions, int elseIndex)
-        {
-            var depth = 0;
-            for (var index = elseIndex + 1; index < actions.Count; index++)
-            {
-                switch (actions[index].ActionType)
-                {
-                    case ActionType.If:
-                        depth++;
-                        break;
-                    case ActionType.EndIf when depth == 0:
-                        return index;
-                    case ActionType.EndIf:
-                        depth--;
-                        break;
-                }
-            }
-
-            throw new InvalidOperationException("Else 步骤缺少匹配的 EndIf。");
-        }
-
-        private int FindMatchingEndLoopIndex(IReadOnlyList<ScriptAction> actions, int loopStartIndex)
-        {
-            var depth = 0;
-            for (var index = loopStartIndex + 1; index < actions.Count; index++)
-            {
-                switch (actions[index].ActionType)
-                {
-                    case ActionType.LoopStart:
-                        depth++;
-                        break;
-                    case ActionType.EndLoop when depth == 0:
-                        return index;
-                    case ActionType.EndLoop:
-                        depth--;
-                        break;
-                }
-            }
-
-            throw new InvalidOperationException("Loop Start 步骤缺少匹配的 End Loop。");
-        }
 
         private async Task<string> ExecuteOcrAsync(int x, int y, int width, int height)
         {
@@ -988,7 +946,7 @@ namespace OlAform
             if (result.MatchState)
             {
                 AppendOutput($"FindImage => 命中 X={result.X}, Y={result.Y}, W={result.Width}, H={result.Height}, Score={result.MatchVal:F2}");
-                SetMatchResultVariables(variables, action.OutputVariable, result);
+                WorkflowExecutionHelper.SetMatchResultVariables(variables, action.OutputVariable, result);
             }
             else
             {
@@ -1000,6 +958,9 @@ namespace OlAform
         {
             lstActions.Visible = false;
             designPanel.Visible = false;
+            _lstAvailableActions.Visible = false;
+
+            var tabAvailableActions = EnsureAvailableActionsTabControl();
 
             _lblWorkflowActions.AutoSize = true;
             _lblWorkflowActions.Text = "执行步骤";
@@ -1009,13 +970,15 @@ namespace OlAform
             _lblAvailableActions.Text = "基础功能";
             _lblAvailableActions.Location = new Point(designPanel.Left, Math.Max(8, designPanel.Top - 18));
 
-            _lstAvailableActions.AllowDrop = false;
-            _lstAvailableActions.FormattingEnabled = true;
-            _lstAvailableActions.IntegralHeight = false;
-            _lstAvailableActions.ItemHeight = 15;
-            _lstAvailableActions.Location = designPanel.Location;
-            _lstAvailableActions.Size = designPanel.Size;
-            _lstAvailableActions.Anchor = designPanel.Anchor;
+            tabAvailableActions.Alignment = TabAlignment.Left;
+            tabAvailableActions.Multiline = true;
+            tabAvailableActions.SizeMode = TabSizeMode.Fixed;
+            tabAvailableActions.DrawMode = TabDrawMode.OwnerDrawFixed;
+            tabAvailableActions.ShowToolTips = true;
+            tabAvailableActions.ItemSize = new Size(36, 96);
+            tabAvailableActions.Location = designPanel.Location;
+            tabAvailableActions.Size = designPanel.Size;
+            tabAvailableActions.Anchor = designPanel.Anchor;
 
             _treeActions.HideSelection = false;
             _treeActions.Location = lstActions.Location;
@@ -1025,9 +988,12 @@ namespace OlAform
 
             Controls.Add(_lblWorkflowActions);
             Controls.Add(_lblAvailableActions);
-            Controls.Add(_lstAvailableActions);
+            if (!Controls.Contains(tabAvailableActions))
+            {
+                Controls.Add(tabAvailableActions);
+            }
             Controls.Add(_treeActions);
-            _lstAvailableActions.BringToFront();
+            tabAvailableActions.BringToFront();
             _treeActions.BringToFront();
 
             btnAddMouse.Text = "删除步骤";
@@ -1037,99 +1003,258 @@ namespace OlAform
             lblOcrResult.Text = "执行输出";
 
             _treeActions.AfterSelect += TreeActions_AfterSelect;
-            _lstAvailableActions.MouseDown += AvailableActions_MouseDown;
-            _lstAvailableActions.DoubleClick += AvailableActions_DoubleClick;
-            _lstAvailableActions.SelectedIndexChanged += AvailableActions_SelectedIndexChanged;
+            tabAvailableActions.SelectedIndexChanged += (_, _) => UpdateAvailableActionDescription();
+            tabAvailableActions.DrawItem -= TabAvailableActions_DrawItem;
+            tabAvailableActions.DrawItem += TabAvailableActions_DrawItem;
             _treeActions.ItemDrag += TreeActions_ItemDrag;
             _treeActions.DragEnter += TreeActions_DragEnter;
             _treeActions.DragOver += TreeActions_DragOver;
             _treeActions.DragDrop += TreeActions_DragDrop;
             _treeActions.KeyDown += TreeActions_KeyDown;
+
+            ArrangeWorkflowLayout();
+        }
+
+        private void ArrangeWorkflowLayout()
+        {
+            if (!IsHandleCreated)
+            {
+                return;
+            }
+
+            var tabAvailableActions = EnsureAvailableActionsTabControl();
+
+            const int gap = 6;
+
+            var workflowWidth = 180;
+            var buttonLeft = _treeActions.Right + gap;
+            var buttonWidth = btnSaveProject.Width;
+            var propertyGridLeft = propertyGrid.Left;
+            var availableLeft = btnSaveProject.Right + gap;
+
+            var computedWorkflowWidth = Math.Max(160, btnSaveProject.Left - lstActions.Left - gap);
+            workflowWidth = computedWorkflowWidth;
+
+            _lblWorkflowActions.Location = new Point(lstActions.Left, Math.Max(8, _treeActions.Top - 18));
+            _treeActions.Location = lstActions.Location;
+            _treeActions.Size = new Size(workflowWidth, lstActions.Height);
+
+            buttonLeft = _treeActions.Right + gap;
+
+            var projectControls = new Control[]
+            {
+                lblProjects, cmbProjects, btnSaveProject, btnLoadProject, btnDeleteProject,
+                lblTargetHwnd, txtTargetHwnd, btnPickWindow, btnBindWindow, btnTestOcr, btnTrackTarget,
+                lblBindStatus, lblOcrResult, txtOcrResult, btnAddMouse, btnAddKey, btnAddOCR, btnRun
+            };
+
+            foreach (var control in projectControls)
+            {
+                control.Left = buttonLeft;
+            }
+
+            availableLeft = buttonLeft + buttonWidth + gap;
+            var availableWidth = Math.Max(220, propertyGridLeft - availableLeft - gap);
+
+            _lblAvailableActions.Location = new Point(availableLeft, Math.Max(8, tabAvailableActions.Top - 18));
+            tabAvailableActions.Location = new Point(availableLeft, designPanel.Top);
+            tabAvailableActions.Size = new Size(availableWidth, designPanel.Height);
+
+            btnAddMouse.BringToFront();
+            btnAddKey.BringToFront();
+            btnAddOCR.BringToFront();
+            btnRun.BringToFront();
+            btnSaveProject.BringToFront();
+            btnLoadProject.BringToFront();
+            btnDeleteProject.BringToFront();
         }
 
         private void InitializeActionCatalog()
         {
+            var tabAvailableActions = EnsureAvailableActionsTabControl();
+
             _availableActionTemplates.Clear();
-            _availableActionTemplates.Add(new ActionTemplate("Set Variable", new ScriptAction { Name = "Set Variable", ActionType = ActionType.SetVariable, Description = "将文本值写入变量，支持 ${变量名} 模板。", OutputVariable = "var1", TextValue = "value" }));
-            _availableActionTemplates.Add(new ActionTemplate("If", new ScriptAction { Name = "If", ActionType = ActionType.If, Description = "条件成立时继续执行，否则跳到 Else 或 EndIf。", ConditionLeft = "${var1}", ConditionOperator = ConditionOperatorType.Equals, ConditionRight = "value" }));
-            _availableActionTemplates.Add(new ActionTemplate("Else", new ScriptAction { Name = "Else", ActionType = ActionType.Else, Description = "If 条件不成立时执行的分支开始。" }));
-            _availableActionTemplates.Add(new ActionTemplate("End If", new ScriptAction { Name = "End If", ActionType = ActionType.EndIf, Description = "结束 If/Else 结构。" }));
-            _availableActionTemplates.Add(new ActionTemplate("Loop Start", new ScriptAction { Name = "Loop Start", ActionType = ActionType.LoopStart, Description = "开始固定次数循环，可把当前轮次写入变量。", RepeatCount = 3, OutputVariable = "loopIndex" }));
-            _availableActionTemplates.Add(new ActionTemplate("End Loop", new ScriptAction { Name = "End Loop", ActionType = ActionType.EndLoop, Description = "结束循环并返回到 Loop Start。" }));
-            _availableActionTemplates.Add(new ActionTemplate("Break Loop", new ScriptAction { Name = "Break Loop", ActionType = ActionType.BreakLoop, Description = "跳出最近一层循环。" }));
-            _availableActionTemplates.Add(new ActionTemplate("Goto Step", new ScriptAction { Name = "Goto Step", ActionType = ActionType.GotoStep, Description = "跳转到目标步骤 Id。", TargetStep = "step_target" }));
-            _availableActionTemplates.Add(new ActionTemplate("Call Step", new ScriptAction { Name = "Call Step", ActionType = ActionType.CallStep, Description = "调用目标步骤 Id，遇到 Return Step 返回。", TargetStep = "subroutine" }));
-            _availableActionTemplates.Add(new ActionTemplate("Return Step", new ScriptAction { Name = "Return Step", ActionType = ActionType.ReturnStep, Description = "从步骤调用中返回。" }));
-            _availableActionTemplates.Add(new ActionTemplate("Mouse Move", new ScriptAction { Name = "Mouse Move", ActionType = ActionType.MouseMove, Description = "移动鼠标到目标坐标。", X = 100, Y = 100 }));
-            _availableActionTemplates.Add(new ActionTemplate("Left Click", new ScriptAction { Name = "Left Click", ActionType = ActionType.LeftClick, Description = "移动到坐标后执行左键点击。", X = 100, Y = 100 }));
-            _availableActionTemplates.Add(new ActionTemplate("Left Double Click", new ScriptAction { Name = "Left Double Click", ActionType = ActionType.LeftDoubleClick, Description = "移动到坐标后执行左键双击。", X = 100, Y = 100 }));
-            _availableActionTemplates.Add(new ActionTemplate("Left Down", new ScriptAction { Name = "Left Down", ActionType = ActionType.LeftDown, Description = "移动到坐标后按下左键，不自动释放。", X = 100, Y = 100 }));
-            _availableActionTemplates.Add(new ActionTemplate("Left Up", new ScriptAction { Name = "Left Up", ActionType = ActionType.LeftUp, Description = "释放当前左键按下状态。" }));
-            _availableActionTemplates.Add(new ActionTemplate("Mouse Drag", new ScriptAction { Name = "Mouse Drag", ActionType = ActionType.MouseDrag, Description = "按下左键后拖动到终点并释放。", X = 100, Y = 100, EndX = 200, EndY = 200, PollIntervalMs = 100 }));
-            _availableActionTemplates.Add(new ActionTemplate("Right Click", new ScriptAction { Name = "Right Click", ActionType = ActionType.RightClick, Description = "移动到坐标后执行右键点击。", X = 100, Y = 100 }));
-            _availableActionTemplates.Add(new ActionTemplate("Right Down", new ScriptAction { Name = "Right Down", ActionType = ActionType.RightDown, Description = "移动到坐标后按下右键，不自动释放。", X = 100, Y = 100 }));
-            _availableActionTemplates.Add(new ActionTemplate("Right Up", new ScriptAction { Name = "Right Up", ActionType = ActionType.RightUp, Description = "释放当前右键按下状态。" }));
-            _availableActionTemplates.Add(new ActionTemplate("Middle Click", new ScriptAction { Name = "Middle Click", ActionType = ActionType.MiddleClick, Description = "移动到坐标后执行中键点击。", X = 100, Y = 100 }));
-            _availableActionTemplates.Add(new ActionTemplate("Wheel Up", new ScriptAction { Name = "Wheel Up", ActionType = ActionType.WheelUp, Description = "在当前鼠标位置执行滚轮向上。" }));
-            _availableActionTemplates.Add(new ActionTemplate("Wheel Down", new ScriptAction { Name = "Wheel Down", ActionType = ActionType.WheelDown, Description = "在当前鼠标位置执行滚轮向下。" }));
-            _availableActionTemplates.Add(new ActionTemplate("Key Press", new ScriptAction { Name = "Key Press", ActionType = ActionType.KeyPress, Description = "发送单个按键或按键串。", Key = "A" }));
-            _availableActionTemplates.Add(new ActionTemplate("Input Text", new ScriptAction { Name = "Input Text", ActionType = ActionType.InputText, Description = "向目标窗口输入文本。", TextValue = "hello" }));
-            _availableActionTemplates.Add(new ActionTemplate("Set Clipboard", new ScriptAction { Name = "Set Clipboard", ActionType = ActionType.SetClipboard, Description = "设置系统剪贴板内容。", TextValue = "hello" }));
-            _availableActionTemplates.Add(new ActionTemplate("Send Paste", new ScriptAction { Name = "Send Paste", ActionType = ActionType.SendPaste, Description = "向当前绑定窗口发送粘贴命令。" }));
-            _availableActionTemplates.Add(new ActionTemplate("OCR", new ScriptAction { Name = "OCR", ActionType = ActionType.OCR, Description = "识别指定区域的文字。", X = 100, Y = 100, Width = 100, Height = 100 }));
-            _availableActionTemplates.Add(new ActionTemplate("Find Image", new ScriptAction { Name = "Find Image", ActionType = ActionType.FindImage, Description = "在指定区域查找图片。", X = 0, Y = 0, Width = 300, Height = 300, ImagePath = "sample.png", MatchThreshold = 0.8 }));
-            _availableActionTemplates.Add(new ActionTemplate("Click Image", new ScriptAction { Name = "Click Image", ActionType = ActionType.ClickImage, Description = "找到图片后点击其中心点。", X = 0, Y = 0, Width = 300, Height = 300, ImagePath = "sample.png", MatchThreshold = 0.8 }));
-            _availableActionTemplates.Add(new ActionTemplate("Wait Image", new ScriptAction { Name = "Wait Image", ActionType = ActionType.WaitImage, Description = "轮询指定区域直到图片出现。", X = 0, Y = 0, Width = 300, Height = 300, ImagePath = "sample.png", MatchThreshold = 0.8, TimeoutMs = 3000, PollIntervalMs = 200 }));
-            _availableActionTemplates.Add(new ActionTemplate("Find Color", new ScriptAction { Name = "Find Color", ActionType = ActionType.FindColor, Description = "在区域内查找颜色范围。", X = 0, Y = 0, Width = 300, Height = 300, ColorStart = "000000", ColorEnd = "FFFFFF", SearchDirection = 0 }));
-            _availableActionTemplates.Add(new ActionTemplate("Click Color", new ScriptAction { Name = "Click Color", ActionType = ActionType.ClickColor, Description = "找到颜色后点击命中的坐标。", X = 0, Y = 0, Width = 300, Height = 300, ColorStart = "000000", ColorEnd = "FFFFFF", SearchDirection = 0 }));
-            _availableActionTemplates.Add(new ActionTemplate("Wait Color", new ScriptAction { Name = "Wait Color", ActionType = ActionType.WaitColor, Description = "轮询指定区域直到颜色出现。", X = 0, Y = 0, Width = 300, Height = 300, ColorStart = "000000", ColorEnd = "FFFFFF", SearchDirection = 0, TimeoutMs = 3000, PollIntervalMs = 200 }));
-            _availableActionTemplates.Add(new ActionTemplate("Capture", new ScriptAction { Name = "Capture", ActionType = ActionType.Capture, Description = "将指定区域截图保存到文件。", X = 0, Y = 0, Width = 300, Height = 300, ImagePath = "capture.png" }));
-            _availableActionTemplates.Add(new ActionTemplate("Window Activate", new ScriptAction { Name = "Window Activate", ActionType = ActionType.WindowActivate, Description = "激活当前绑定窗口。" }));
-            _availableActionTemplates.Add(new ActionTemplate("Window Hide", new ScriptAction { Name = "Window Hide", ActionType = ActionType.WindowHide, Description = "隐藏当前绑定窗口。" }));
-            _availableActionTemplates.Add(new ActionTemplate("Window Show", new ScriptAction { Name = "Window Show", ActionType = ActionType.WindowShow, Description = "显示当前绑定窗口。" }));
-            _availableActionTemplates.Add(new ActionTemplate("Window Set Size", new ScriptAction { Name = "Window Set Size", ActionType = ActionType.WindowSetSize, Description = "设置当前绑定窗口的大小。", Width = 1280, Height = 720 }));
-            _availableActionTemplates.Add(new ActionTemplate("Delay", new ScriptAction { Name = "Delay", ActionType = ActionType.Delay, Description = "等待指定毫秒数。", DelayMs = 500 }));
+            _availableActionTemplates.AddRange(WorkflowActionCatalog.CreateDefaultTemplates());
 
-            _lstAvailableActions.Items.Clear();
-            foreach (var template in _availableActionTemplates)
+            tabAvailableActions.TabPages.Clear();
+
+            foreach (var group in _availableActionTemplates.GroupBy(t => t.Category).OrderBy(g => g.Key))
             {
-                _lstAvailableActions.Items.Add(template);
+                var listBox = new ListBox
+                {
+                    Dock = DockStyle.Fill,
+                    BorderStyle = BorderStyle.None,
+                    FormattingEnabled = true,
+                    IntegralHeight = false,
+                    ItemHeight = 15
+                };
+
+                listBox.MouseDown += AvailableActions_MouseDown;
+                listBox.DoubleClick += AvailableActions_DoubleClick;
+                listBox.SelectedIndexChanged += AvailableActions_SelectedIndexChanged;
+
+                foreach (var template in group)
+                {
+                    listBox.Items.Add(template);
+                }
+
+                var tabPage = new TabPage(ActionCategoryVisuals.GetIcon(group.Key))
+                {
+                    ToolTipText = ActionCategoryVisuals.GetDisplayName(group.Key),
+                    Tag = group.Key
+                };
+                tabPage.Controls.Add(listBox);
+                tabAvailableActions.TabPages.Add(tabPage);
             }
 
-            if (_lstAvailableActions.Items.Count > 0)
+            tabAvailableActions.TabPages.Add(EnsureDetectionPreviewTab());
+
+            if (tabAvailableActions.TabPages.Count > 0)
             {
-                _lstAvailableActions.SelectedIndex = 0;
+                tabAvailableActions.SelectedIndex = 0;
+                var listBox = GetCurrentAvailableActionsList();
+                if (listBox is not null && listBox.Items.Count > 0)
+                {
+                    listBox.SelectedIndex = 0;
+                }
             }
+
+            UpdateAvailableActionDescription();
         }
 
         private void AvailableActions_MouseDown(object? sender, MouseEventArgs e)
         {
-            var index = _lstAvailableActions.IndexFromPoint(e.Location);
+            if (sender is not ListBox listBox)
+            {
+                return;
+            }
+
+            var index = listBox.IndexFromPoint(e.Location);
             if (index == ListBox.NoMatches)
             {
                 return;
             }
 
-            _lstAvailableActions.SelectedIndex = index;
-            var template = (ActionTemplate)_lstAvailableActions.Items[index];
-            _lstAvailableActions.DoDragDrop(new ActionDragData(template, -1), DragDropEffects.Copy);
+            listBox.SelectedIndex = index;
+            var template = (ActionTemplate)listBox.Items[index];
+            listBox.DoDragDrop(new ActionDragData(template, -1), DragDropEffects.Copy);
         }
 
         private void AvailableActions_DoubleClick(object? sender, EventArgs e)
         {
-            if (_lstAvailableActions.SelectedItem is ActionTemplate template)
+            if (sender is ListBox listBox && listBox.SelectedItem is ActionTemplate template)
             {
                 var selectedNode = _treeActions.SelectedNode;
-                AddAction(template.CreateAction(), selectedNode, selectedNode?.Tag is WorkflowNode node && CanContainChildren(node.Action.ActionType));
+                AddAction(template.CreateAction(), selectedNode, selectedNode?.Tag is WorkflowNode node && WorkflowTreeService.CanContainChildren(node.Action.ActionType));
             }
         }
 
         private void AvailableActions_SelectedIndexChanged(object? sender, EventArgs e)
         {
-            if (_lstAvailableActions.SelectedItem is ActionTemplate template)
+            UpdateAvailableActionDescription();
+        }
+
+        private ListBox? GetCurrentAvailableActionsList()
+        {
+            return GetAvailableActionsTabControl()?.SelectedTab?.Controls.OfType<ListBox>().FirstOrDefault();
+        }
+
+        private TabControl EnsureAvailableActionsTabControl()
+        {
+            return GetAvailableActionsTabControl()
+                ?? CreateAvailableActionsTabControl();
+        }
+
+        private TabControl? GetAvailableActionsTabControl()
+        {
+            return Controls.OfType<TabControl>().FirstOrDefault(control => control.Name == "tabAvailableActions");
+        }
+
+        private TabControl CreateAvailableActionsTabControl()
+        {
+            return new TabControl
+            {
+                Name = "tabAvailableActions"
+            };
+        }
+
+        private void TabAvailableActions_DrawItem(object? sender, DrawItemEventArgs e)
+        {
+            if (sender is not TabControl tabControl || e.Index < 0 || e.Index >= tabControl.TabPages.Count)
+            {
+                return;
+            }
+
+            var tabPage = tabControl.TabPages[e.Index];
+            var isSelected = (e.State & DrawItemState.Selected) == DrawItemState.Selected;
+            var backColor = isSelected ? SystemColors.ControlLightLight : SystemColors.Control;
+
+            using var backBrush = new SolidBrush(backColor);
+            e.Graphics.FillRectangle(backBrush, e.Bounds);
+
+            var icon = tabPage.Text;
+            TextRenderer.DrawText(
+                e.Graphics,
+                icon,
+                new Font(Font.FontFamily, 14F, FontStyle.Regular),
+                e.Bounds,
+                SystemColors.ControlText,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+
+            if (isSelected)
+            {
+                using var pen = new Pen(SystemColors.Highlight, 2);
+                e.Graphics.DrawRectangle(pen, e.Bounds.Left + 1, e.Bounds.Top + 1, e.Bounds.Width - 3, e.Bounds.Height - 3);
+            }
+        }
+
+        private void UpdateAvailableActionDescription()
+        {
+            var listBox = GetCurrentAvailableActionsList();
+            if (listBox?.SelectedItem is ActionTemplate template)
             {
                 txtOcrResult.Text = $"功能: {template.DisplayName}{Environment.NewLine}{Environment.NewLine}{template.Description}";
             }
+        }
+
+        private TabPage EnsureDetectionPreviewTab()
+        {
+            if (_tabDetectionPreview is not null)
+            {
+                return _tabDetectionPreview;
+            }
+
+            _picDetectionPreview.Dock = DockStyle.Fill;
+            _picDetectionPreview.BackColor = Color.Black;
+            _picDetectionPreview.SizeMode = PictureBoxSizeMode.Zoom;
+
+            _tabDetectionPreview = new TabPage("🖼")
+            {
+                ToolTipText = "检测预览"
+            };
+            _tabDetectionPreview.Controls.Add(_picDetectionPreview);
+            return _tabDetectionPreview;
+        }
+
+        private void ShowDetectionPreview(string imagePath)
+        {
+            if (!File.Exists(imagePath))
+            {
+                return;
+            }
+
+            var tabAvailableActions = EnsureAvailableActionsTabControl();
+            var previewTab = EnsureDetectionPreviewTab();
+            if (!tabAvailableActions.TabPages.Contains(previewTab))
+            {
+                tabAvailableActions.TabPages.Add(previewTab);
+            }
+
+            _picDetectionPreview.Image?.Dispose();
+            using var stream = new FileStream(imagePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var image = Image.FromStream(stream);
+            _picDetectionPreview.Image = new Bitmap(image);
+            tabAvailableActions.SelectedTab = previewTab;
         }
 
         private void TreeActions_ItemDrag(object? sender, ItemDragEventArgs e)
@@ -1186,7 +1311,7 @@ namespace OlAform
                 var data = (ActionDragData)e.Data.GetData(typeof(ActionDragData))!;
                 if (data.Template is not null)
                 {
-                    AddAction(data.Template.CreateAction(), targetNode, targetNode?.Tag is WorkflowNode workflowNode && CanContainChildren(workflowNode.Action.ActionType));
+                    AddAction(data.Template.CreateAction(), targetNode, targetNode?.Tag is WorkflowNode workflowNode && WorkflowTreeService.CanContainChildren(workflowNode.Action.ActionType));
                 }
 
                 return;
@@ -1195,7 +1320,8 @@ namespace OlAform
             if (e.Data?.GetDataPresent(typeof(WorkflowNodeDragData)) == true)
             {
                 var data = (WorkflowNodeDragData)e.Data.GetData(typeof(WorkflowNodeDragData))!;
-                MoveWorkflowNode(data.Node, targetNode);
+                WorkflowTreeService.MoveWorkflowNode(_workflowRoots, data.Node, targetNode);
+                RefreshWorkflowTree(data.Node.Id);
             }
         }
 
@@ -1220,7 +1346,7 @@ namespace OlAform
             _treeActions.Nodes.Clear();
             foreach (var node in _workflowRoots)
             {
-                _treeActions.Nodes.Add(CreateTreeNode(node));
+                _treeActions.Nodes.Add(WorkflowTreeService.CreateTreeNode(node));
             }
             _treeActions.ExpandAll();
             _treeActions.EndUpdate();
@@ -1233,7 +1359,7 @@ namespace OlAform
 
             if (!string.IsNullOrWhiteSpace(selectedNodeId))
             {
-                var selectedNode = FindTreeNodeByWorkflowId(_treeActions.Nodes, selectedNodeId);
+                var selectedNode = WorkflowTreeService.FindTreeNodeByWorkflowId(_treeActions.Nodes, selectedNodeId);
                 if (selectedNode is not null)
                 {
                     _treeActions.SelectedNode = selectedNode;
@@ -1244,21 +1370,6 @@ namespace OlAform
             _treeActions.SelectedNode = _treeActions.Nodes.Count > 0 ? _treeActions.Nodes[0] : null;
         }
 
-        private TreeNode CreateTreeNode(WorkflowNode node)
-        {
-            var text = string.IsNullOrWhiteSpace(node.Action.StepId)
-                ? node.Action.ToString()
-                : $"[{node.Action.StepId}] {node.Action}";
-
-            var treeNode = new TreeNode(text) { Tag = node };
-            foreach (var child in node.Children)
-            {
-                treeNode.Nodes.Add(CreateTreeNode(child));
-            }
-
-            return treeNode;
-        }
-
         private void RemoveSelectedAction()
         {
             if (_treeActions.SelectedNode?.Tag is not WorkflowNode selectedNode)
@@ -1266,7 +1377,7 @@ namespace OlAform
                 return;
             }
 
-            RemoveWorkflowNode(_workflowRoots, selectedNode);
+            WorkflowTreeService.RemoveWorkflowNode(_workflowRoots, selectedNode);
             RefreshWorkflowTree();
         }
 
@@ -1277,7 +1388,7 @@ namespace OlAform
                 return;
             }
 
-            var siblings = GetSiblingList(treeNode);
+            var siblings = WorkflowTreeService.GetSiblingList(_workflowRoots, treeNode);
             var index = siblings.IndexOf(selectedNode);
             if (index < 0)
             {
@@ -1293,100 +1404,6 @@ namespace OlAform
             siblings.RemoveAt(index);
             siblings.Insert(newIndex, selectedNode);
             RefreshWorkflowTree(selectedNode.Id);
-        }
-
-        private List<WorkflowNode> GetSiblingList(TreeNode treeNode)
-        {
-            return treeNode.Parent?.Tag is WorkflowNode parentNode ? parentNode.Children : _workflowRoots;
-        }
-
-        private void MoveWorkflowNode(WorkflowNode sourceNode, TreeNode? targetTreeNode)
-        {
-            if (targetTreeNode?.Tag is WorkflowNode targetNode)
-            {
-                if (ReferenceEquals(sourceNode, targetNode) || ContainsNode(sourceNode, targetNode))
-                {
-                    return;
-                }
-            }
-
-            RemoveWorkflowNode(_workflowRoots, sourceNode);
-
-            if (targetTreeNode?.Tag is not WorkflowNode targetWorkflowNode)
-            {
-                _workflowRoots.Add(sourceNode);
-                RefreshWorkflowTree(sourceNode.Id);
-                return;
-            }
-
-            if (CanContainChildren(targetWorkflowNode.Action.ActionType))
-            {
-                if (sourceNode.Action.ActionType == ActionType.Else && targetWorkflowNode.Action.ActionType != ActionType.If)
-                {
-                    throw new InvalidOperationException("Else 只能移动到 If 步骤下。");
-                }
-
-                targetWorkflowNode.Children.Add(sourceNode);
-            }
-            else
-            {
-                var siblings = GetSiblingList(targetTreeNode);
-                var targetIndex = siblings.IndexOf(targetWorkflowNode);
-                siblings.Insert(targetIndex + 1, sourceNode);
-            }
-
-            RefreshWorkflowTree(sourceNode.Id);
-        }
-
-        private static bool RemoveWorkflowNode(ICollection<WorkflowNode> nodes, WorkflowNode target)
-        {
-            foreach (var node in nodes.ToList())
-            {
-                if (ReferenceEquals(node, target))
-                {
-                    nodes.Remove(node);
-                    return true;
-                }
-
-                if (RemoveWorkflowNode(node.Children, target))
-                {
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
-        private static bool ContainsNode(WorkflowNode parent, WorkflowNode target)
-        {
-            foreach (var child in parent.Children)
-            {
-                if (ReferenceEquals(child, target) || ContainsNode(child, target))
-                {
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
-        private static TreeNode? FindTreeNodeByWorkflowId(TreeNodeCollection nodes, string workflowId)
-        {
-            foreach (TreeNode node in nodes)
-            {
-                if (node.Tag is WorkflowNode workflowNode && string.Equals(workflowNode.Id, workflowId, StringComparison.OrdinalIgnoreCase))
-                {
-                    return node;
-                }
-
-                var childResult = FindTreeNodeByWorkflowId(node.Nodes, workflowId);
-                if (childResult is not null)
-                {
-                    return childResult;
-                }
-            }
-
-            return null;
         }
 
         private void AppendOutput(string message)
@@ -1427,6 +1444,170 @@ namespace OlAform
             _isRunningWorkflow = isRunning;
             btnRun.Enabled = !isRunning;
             btnRun.Text = isRunning ? "执行中..." : "执行流程";
+        }
+
+        private void StartTracking(string modelPath)
+        {
+            StopTracking(waitForCompletion: false);
+
+            _trackingCts = new CancellationTokenSource();
+            _isTrackingArmed = true;
+            UpdateTrackingButtonState();
+            _trackingTask = Task.Run(() => RunTrackingLoopAsync(modelPath, _trackingCts.Token));
+        }
+
+        private void StopTracking(bool waitForCompletion)
+        {
+            _trackingCts?.Cancel();
+
+            if (waitForCompletion && _trackingTask is not null)
+            {
+                try
+                {
+                    _trackingTask.Wait(500);
+                }
+                catch
+                {
+                }
+            }
+
+            _trackingCts?.Dispose();
+            _trackingCts = null;
+            _trackingTask = null;
+            _isTrackingArmed = false;
+            UpdateTrackingButtonState();
+        }
+
+        private void UpdateTrackingButtonState()
+        {
+            if (InvokeRequired)
+            {
+                BeginInvoke(UpdateTrackingButtonState);
+                return;
+            }
+
+            btnTrackTarget.Text = _isTrackingArmed ? "停止追踪" : "目标追踪";
+        }
+
+        private async Task RunTrackingLoopAsync(string modelPath, CancellationToken cancellationToken)
+        {
+            try
+            {
+                using var analyzer = new YoloOnnxImageAnalyzer(modelPath);
+
+                while (!cancellationToken.IsCancellationRequested && !NativeMethods.IsLeftMouseButtonDown())
+                {
+                    await Task.Delay(TrackingLoopDelayMs, cancellationToken);
+                }
+
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                AppendOutput("检测到左键按下，开始后台目标追踪。");
+
+                while (!cancellationToken.IsCancellationRequested && NativeMethods.IsLeftMouseButtonDown())
+                {
+                    var clientSize = await _olaWorker.GetBoundWindowClientSizeAsync();
+                    var captureBounds = GetCenteredCaptureBounds(clientSize, TrackingRegionSize);
+                    var bmpBytes = await _olaWorker.CaptureBmpBytesAsync(captureBounds.Left, captureBounds.Top, captureBounds.Right, captureBounds.Bottom);
+
+                    using var capturedMat = OpenCvSharp.Cv2.ImDecode(bmpBytes, OpenCvSharp.ImreadModes.Color);
+                    if (capturedMat.Empty())
+                    {
+                        await Task.Delay(TrackingLoopDelayMs, cancellationToken);
+                        continue;
+                    }
+
+                    var analysis = analyzer.AnalyzeImageDetailed(capturedMat, TrackingConfidenceThreshold, TrackingIouThreshold);
+                    var target = SelectTrackingTarget(analysis.Detections, capturedMat.Width / 2f, capturedMat.Height / 2f);
+
+                    using var previewMat = analyzer.CreateAnnotatedImage(capturedMat, analysis.Detections);
+                    UpdateDetectionPreview(previewMat);
+
+                    if (target is not null)
+                    {
+                        var targetCenterX = (target.X1 + target.X2) / 2f;
+                        var targetCenterY = (target.Y1 + target.Y2) / 2f;
+                        var cropCenterX = capturedMat.Width / 2f;
+                        var cropCenterY = capturedMat.Height / 2f;
+                        var deltaX = targetCenterX - cropCenterX;
+                        var deltaY = targetCenterY - cropCenterY;
+
+                        if (Math.Abs(deltaX) > TrackingDeadzonePixels || Math.Abs(deltaY) > TrackingDeadzonePixels)
+                        {
+                            var moveX = (int)Math.Round(deltaX * TrackingMoveScale);
+                            var moveY = (int)Math.Round(deltaY * TrackingMoveScale);
+                            await _olaWorker.MoveRelativeAsync(moveX, moveY);
+                        }
+                    }
+
+                    await Task.Delay(TrackingLoopDelayMs, cancellationToken);
+                }
+
+                AppendOutput("鼠标左键已弹起，后台目标追踪停止。");
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                BeginInvoke(() => MessageBox.Show(ex.Message, "目标追踪", MessageBoxButtons.OK, MessageBoxIcon.Error));
+            }
+            finally
+            {
+                BeginInvoke(() => StopTracking(waitForCompletion: false));
+            }
+        }
+
+        private static Rectangle GetCenteredCaptureBounds(Size clientSize, int preferredSize)
+        {
+            var captureWidth = Math.Min(preferredSize, clientSize.Width);
+            var captureHeight = Math.Min(preferredSize, clientSize.Height);
+            var left = Math.Max(0, (clientSize.Width - captureWidth) / 2);
+            var top = Math.Max(0, (clientSize.Height - captureHeight) / 2);
+            return new Rectangle(left, top, captureWidth, captureHeight);
+        }
+
+        private static YoloDetection? SelectTrackingTarget(IReadOnlyList<YoloDetection> detections, float centerX, float centerY)
+        {
+            return detections
+                .OrderBy(detection => Math.Sqrt(Math.Pow(((detection.X1 + detection.X2) / 2f) - centerX, 2) + Math.Pow(((detection.Y1 + detection.Y2) / 2f) - centerY, 2)))
+                .ThenByDescending(detection => detection.Confidence)
+                .FirstOrDefault();
+        }
+
+        private void UpdateDetectionPreview(OpenCvSharp.Mat image)
+        {
+            var pngBytes = image.ImEncode(".png");
+            using var ms = new MemoryStream(pngBytes);
+            using var loadedImage = Image.FromStream(ms);
+            var preview = new Bitmap(loadedImage);
+
+            if (InvokeRequired)
+            {
+                BeginInvoke(() => SetPreviewBitmap(preview));
+                return;
+            }
+
+            SetPreviewBitmap(preview);
+        }
+
+        private void SetPreviewBitmap(Bitmap preview)
+        {
+            var previous = _picDetectionPreview.Image;
+            _picDetectionPreview.Image = preview;
+            previous?.Dispose();
+
+            var tabAvailableActions = EnsureAvailableActionsTabControl();
+            var previewTab = EnsureDetectionPreviewTab();
+            if (!tabAvailableActions.TabPages.Contains(previewTab))
+            {
+                tabAvailableActions.TabPages.Add(previewTab);
+            }
+
+            tabAvailableActions.SelectedTab = previewTab;
         }
 
         private void StartWindowPick()
@@ -1539,6 +1720,54 @@ namespace OlAform
             }
 
             lblBindStatus.Text = "未绑定外部窗口";
+        }
+
+        private void LoadProjectList(string? selectedProject = null)
+        {
+            var projectNames = _projectStorage.GetProjectNames();
+
+            cmbProjects.BeginUpdate();
+            cmbProjects.Items.Clear();
+            foreach (var name in projectNames)
+            {
+                cmbProjects.Items.Add(name);
+            }
+            cmbProjects.EndUpdate();
+
+            if (!string.IsNullOrWhiteSpace(selectedProject) && projectNames.Contains(selectedProject, StringComparer.OrdinalIgnoreCase))
+            {
+                cmbProjects.Text = selectedProject;
+            }
+            else if (projectNames.Count > 0 && string.IsNullOrWhiteSpace(cmbProjects.Text))
+            {
+                cmbProjects.SelectedIndex = 0;
+            }
+
+            btnSaveProject.BringToFront();
+            btnLoadProject.BringToFront();
+            btnDeleteProject.BringToFront();
+            btnSaveProject.Parent?.PerformLayout();
+        }
+
+        private void SaveProject(string projectName)
+        {
+            _projectStorage.Save(projectName, _workflowRoots);
+        }
+
+        private void LoadProject(string projectName)
+        {
+            var project = _projectStorage.Load(projectName);
+
+            _workflowRoots.Clear();
+            foreach (var node in _projectStorage.RestoreWorkflow(project))
+            {
+                _workflowRoots.Add(node);
+            }
+
+            _isBound = false;
+            UpdateBindingStatus();
+            RefreshWorkflowTree();
+            cmbProjects.Text = project.Name;
         }
 
     }

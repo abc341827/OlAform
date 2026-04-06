@@ -1,9 +1,10 @@
-using System.ComponentModel;
+﻿using System.ComponentModel;
 
 namespace OlAform
 {
     public enum ActionType
     {
+        BindWindow,
         SetVariable,
         If,
         Else,
@@ -61,87 +62,103 @@ namespace OlAform
         IsNotEmpty
     }
 
+    [TypeDescriptionProvider(typeof(ScriptActionTypeDescriptionProvider))]
     public class ScriptAction
     {
-        [DisplayName("Action Name")]
+        [DisplayName("步骤名称")]
         public string Name { get; set; } = "Action";
 
-        [DisplayName("Step Id")]
+        [DisplayName("步骤编号")]
         public string? StepId { get; set; }
 
-        [DisplayName("Type")]
+        [DisplayName("步骤类型")]
         public ActionType ActionType { get; set; }
 
-        [DisplayName("Description")]
+        [DisplayName("说明")]
         public string Description { get; set; } = string.Empty;
 
-        [DisplayName("X")]
+        [DisplayName("X 坐标")]
         public int X { get; set; }
 
-        [DisplayName("Y")]
+        [DisplayName("Y 坐标")]
         public int Y { get; set; }
 
-        [DisplayName("Width")]
+        [DisplayName("宽度")]
         public int Width { get; set; } = 100;
 
-        [DisplayName("Height")]
+        [DisplayName("高度")]
         public int Height { get; set; } = 30;
 
-        [DisplayName("End X")]
+        [DisplayName("结束 X")]
         public int EndX { get; set; }
 
-        [DisplayName("End Y")]
+        [DisplayName("结束 Y")]
         public int EndY { get; set; }
 
-        [DisplayName("Key")]
+        [DisplayName("按键")]
         public string? Key { get; set; }
 
-        [DisplayName("Text")]
+        [DisplayName("文本")]
         public string? TextValue { get; set; }
 
-        [DisplayName("Image Path")]
+        [DisplayName("图片路径")]
         public string? ImagePath { get; set; }
 
-        [DisplayName("Match Threshold")]
+        [DisplayName("匹配阈值")]
         public double MatchThreshold { get; set; } = 0.8;
 
-        [DisplayName("Output Variable")]
+        [DisplayName("输出变量")]
         public string? OutputVariable { get; set; }
 
-        [DisplayName("Target Step")]
+        [DisplayName("目标对象")]
+        public string? TargetObject { get; set; }
+
+        [DisplayName("目标步骤")]
         public string? TargetStep { get; set; }
 
-        [DisplayName("Condition Left")]
+        [DisplayName("窗口句柄")]
+        public string? WindowHandle { get; set; }
+
+        [DisplayName("绑定方式")]
+        public BindWindowResolveMode BindWindowResolveMode { get; set; } = BindWindowResolveMode.DirectHandle;
+
+        [DisplayName("进程名")]
+        public string? ProcessName { get; set; }
+
+        [DisplayName("使用根窗口")]
+        public bool UseRootWindow { get; set; } = true;
+
+        [DisplayName("条件左值")]
         public string? ConditionLeft { get; set; }
 
-        [DisplayName("Condition Operator")]
+        [DisplayName("条件运算符")]
         public ConditionOperatorType ConditionOperator { get; set; } = ConditionOperatorType.Equals;
 
-        [DisplayName("Condition Right")]
+        [DisplayName("条件右值")]
         public string? ConditionRight { get; set; }
 
-        [DisplayName("Repeat Count")]
+        [DisplayName("循环次数")]
         public int RepeatCount { get; set; } = 1;
 
-        [DisplayName("Color Start")]
+        [DisplayName("起始颜色")]
         public string? ColorStart { get; set; }
 
-        [DisplayName("Color End")]
+        [DisplayName("结束颜色")]
         public string? ColorEnd { get; set; }
 
-        [DisplayName("Search Direction")]
+        [DisplayName("搜索方向")]
         public int SearchDirection { get; set; }
 
-        [DisplayName("Timeout (ms)")]
+        [DisplayName("超时毫秒")]
         public int TimeoutMs { get; set; } = 3000;
 
-        [DisplayName("Poll Interval (ms)")]
+        [DisplayName("轮询间隔毫秒")]
         public int PollIntervalMs { get; set; } = 200;
 
-        [DisplayName("Delay (ms)")]
+        [DisplayName("执行后延时毫秒")]
         public int DelayMs { get; set; } = 200;
 
-        [DisplayName("Additional")]
+        [DisplayName("附加信息")]
         public string? Additional { get; set; }
 
         public ScriptAction Clone()
@@ -153,47 +170,53 @@ namespace OlAform
         {
             return ActionType switch
             {
-                ActionType.SetVariable => $"{Name} {OutputVariable}={TextValue}",
-                ActionType.If => $"{Name} IF {ConditionLeft} {ConditionOperator} {ConditionRight}",
-                ActionType.Else => Name,
-                ActionType.EndIf => Name,
-                ActionType.LoopStart => $"{Name} x{RepeatCount}",
-                ActionType.EndLoop => Name,
-                ActionType.BreakLoop => Name,
-                ActionType.GotoStep => $"{Name} -> {TargetStep}",
-                ActionType.CallStep => $"{Name} => {TargetStep}",
-                ActionType.ReturnStep => Name,
-                ActionType.MouseMove => $"{Name} ({X},{Y})",
-                ActionType.LeftClick => $"{Name} ({X},{Y})",
-                ActionType.LeftDoubleClick => $"{Name} ({X},{Y})",
-                ActionType.LeftDown => $"{Name} ({X},{Y})",
-                ActionType.LeftUp => $"{Name}",
-                ActionType.MouseDrag => $"{Name} ({X},{Y}) -> ({EndX},{EndY})",
-                ActionType.RightClick => $"{Name} ({X},{Y})",
-                ActionType.RightDown => $"{Name} ({X},{Y})",
-                ActionType.RightUp => $"{Name}",
-                ActionType.MiddleClick => $"{Name} ({X},{Y})",
-                ActionType.WheelUp => $"{Name}",
-                ActionType.WheelDown => $"{Name}",
-                ActionType.KeyPress => $"{Name} [{Key}]",
-                ActionType.InputText => $"{Name} [{TextValue}]",
-                ActionType.SetClipboard => $"{Name} [{TextValue}]",
-                ActionType.SendPaste => $"{Name}",
-                ActionType.OCR => $"{Name} ({X},{Y},{Width},{Height})",
-                ActionType.FindImage => $"{Name} [{ImagePath}]",
-                ActionType.ClickImage => $"{Name} [{ImagePath}]",
-                ActionType.WaitImage => $"{Name} [{ImagePath}]",
-                ActionType.FindColor => $"{Name} [{ColorStart}-{ColorEnd}]",
-                ActionType.ClickColor => $"{Name} [{ColorStart}-{ColorEnd}]",
-                ActionType.WaitColor => $"{Name} [{ColorStart}-{ColorEnd}]",
-                ActionType.Capture => $"{Name} [{ImagePath}]",
-                ActionType.WindowActivate => Name,
-                ActionType.WindowHide => Name,
-                ActionType.WindowShow => Name,
-                ActionType.WindowSetSize => $"{Name} [{Width}x{Height}]",
-                ActionType.Delay => $"{Name} {DelayMs}ms",
+                ActionType.BindWindow => $"{ActionVisuals.GetTitle(ActionType)} {OutputVariable} <- {WindowHandle}",
+                ActionType.SetVariable => $"{ActionVisuals.GetTitle(ActionType)} {OutputVariable}={TextValue}",
+                ActionType.If => $"{ActionVisuals.GetTitle(ActionType)} IF {ConditionLeft} {ConditionOperator} {ConditionRight}",
+                ActionType.Else => ActionVisuals.GetTitle(ActionType),
+                ActionType.EndIf => ActionVisuals.GetTitle(ActionType),
+                ActionType.LoopStart => $"{ActionVisuals.GetTitle(ActionType)} x{RepeatCount}",
+                ActionType.EndLoop => ActionVisuals.GetTitle(ActionType),
+                ActionType.BreakLoop => ActionVisuals.GetTitle(ActionType),
+                ActionType.GotoStep => $"{ActionVisuals.GetTitle(ActionType)} -> {TargetStep}",
+                ActionType.CallStep => $"{ActionVisuals.GetTitle(ActionType)} => {TargetStep}",
+                ActionType.ReturnStep => ActionVisuals.GetTitle(ActionType),
+                ActionType.MouseMove => FormatWithTargetObject($"{ActionVisuals.GetTitle(ActionType)} ({X},{Y})"),
+                ActionType.LeftClick => FormatWithTargetObject($"{ActionVisuals.GetTitle(ActionType)} ({X},{Y})"),
+                ActionType.LeftDoubleClick => FormatWithTargetObject($"{ActionVisuals.GetTitle(ActionType)} ({X},{Y})"),
+                ActionType.LeftDown => FormatWithTargetObject($"{ActionVisuals.GetTitle(ActionType)} ({X},{Y})"),
+                ActionType.LeftUp => FormatWithTargetObject(ActionVisuals.GetTitle(ActionType)),
+                ActionType.MouseDrag => FormatWithTargetObject($"{ActionVisuals.GetTitle(ActionType)} ({X},{Y}) -> ({EndX},{EndY})"),
+                ActionType.RightClick => FormatWithTargetObject($"{ActionVisuals.GetTitle(ActionType)} ({X},{Y})"),
+                ActionType.RightDown => FormatWithTargetObject($"{ActionVisuals.GetTitle(ActionType)} ({X},{Y})"),
+                ActionType.RightUp => FormatWithTargetObject(ActionVisuals.GetTitle(ActionType)),
+                ActionType.MiddleClick => FormatWithTargetObject($"{ActionVisuals.GetTitle(ActionType)} ({X},{Y})"),
+                ActionType.WheelUp => FormatWithTargetObject(ActionVisuals.GetTitle(ActionType)),
+                ActionType.WheelDown => FormatWithTargetObject(ActionVisuals.GetTitle(ActionType)),
+                ActionType.KeyPress => FormatWithTargetObject($"{ActionVisuals.GetTitle(ActionType)} [{Key}]"),
+                ActionType.InputText => FormatWithTargetObject($"{ActionVisuals.GetTitle(ActionType)} [{TextValue}]"),
+                ActionType.SetClipboard => $"{ActionVisuals.GetTitle(ActionType)} [{TextValue}]",
+                ActionType.SendPaste => FormatWithTargetObject(ActionVisuals.GetTitle(ActionType)),
+                ActionType.OCR => FormatWithTargetObject($"{ActionVisuals.GetTitle(ActionType)} ({X},{Y},{Width},{Height})"),
+                ActionType.FindImage => FormatWithTargetObject($"{ActionVisuals.GetTitle(ActionType)} [{ImagePath}]"),
+                ActionType.ClickImage => FormatWithTargetObject($"{ActionVisuals.GetTitle(ActionType)} [{ImagePath}]"),
+                ActionType.WaitImage => FormatWithTargetObject($"{ActionVisuals.GetTitle(ActionType)} [{ImagePath}]"),
+                ActionType.FindColor => FormatWithTargetObject($"{ActionVisuals.GetTitle(ActionType)} [{ColorStart}-{ColorEnd}]"),
+                ActionType.ClickColor => FormatWithTargetObject($"{ActionVisuals.GetTitle(ActionType)} [{ColorStart}-{ColorEnd}]"),
+                ActionType.WaitColor => FormatWithTargetObject($"{ActionVisuals.GetTitle(ActionType)} [{ColorStart}-{ColorEnd}]"),
+                ActionType.Capture => FormatWithTargetObject($"{ActionVisuals.GetTitle(ActionType)} [{ImagePath}]"),
+                ActionType.WindowActivate => FormatWithTargetObject(ActionVisuals.GetTitle(ActionType)),
+                ActionType.WindowHide => FormatWithTargetObject(ActionVisuals.GetTitle(ActionType)),
+                ActionType.WindowShow => FormatWithTargetObject(ActionVisuals.GetTitle(ActionType)),
+                ActionType.WindowSetSize => FormatWithTargetObject($"{ActionVisuals.GetTitle(ActionType)} [{Width}x{Height}]"),
+                ActionType.Delay => $"{ActionVisuals.GetTitle(ActionType)} {DelayMs}ms",
                 _ => Name
             };
+        }
+
+        private string FormatWithTargetObject(string text)
+        {
+            return string.IsNullOrWhiteSpace(TargetObject) ? text : $"{text} @{TargetObject}";
         }
     }
 }
