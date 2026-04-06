@@ -8,9 +8,10 @@ namespace OlAform
         private const int TrackingRegionSize = 400;
         private const float TrackingConfidenceThreshold = 0.25f;
         private const float TrackingIouThreshold = 0.45f;
-        private const float TrackingMoveScale = 1.0f;
+        private const float TrackingMoveScale = 0.65f;
         private const int TrackingDeadzonePixels = 3;
         private const int TrackingLoopDelayMs = 12;
+        private const int TrackingPreviewIntervalMs = 80;
         private readonly List<WorkflowNode> _workflowRoots = new();
         private readonly List<ActionTemplate> _availableActionTemplates = new();
         private Control? _draggingControl;
@@ -1492,6 +1493,7 @@ namespace OlAform
         private async Task RunTrackingLoopAsync(string modelPath, CancellationToken cancellationToken)
         {
             var wasTrackingActive = false;
+            var lastPreviewTick = Environment.TickCount64;
 
             try
             {
@@ -1518,38 +1520,54 @@ namespace OlAform
                         AppendOutput("检测到左键按下，开始后台目标追踪。");
                     }
 
-                    var clientSize = await _olaWorker.GetBoundWindowClientSizeAsync();
-                    var captureBounds = GetCenteredCaptureBounds(clientSize, TrackingRegionSize);
-                    var bmpBytes = await _olaWorker.CaptureBmpBytesAsync(captureBounds.Left, captureBounds.Top, captureBounds.Right, captureBounds.Bottom);
-
-                    using var capturedMat = OpenCvSharp.Cv2.ImDecode(bmpBytes, OpenCvSharp.ImreadModes.Color);
-                    if (capturedMat.Empty())
+                    try
                     {
-                        await Task.Delay(TrackingLoopDelayMs, cancellationToken);
-                        continue;
-                    }
+                        var clientSize = await _olaWorker.GetBoundWindowClientSizeAsync();
+                        var captureBounds = GetCenteredCaptureBounds(clientSize, TrackingRegionSize);
+                        var bmpBytes = await _olaWorker.CaptureBmpBytesAsync(captureBounds.Left, captureBounds.Top, captureBounds.Right, captureBounds.Bottom);
 
-                    var analysis = analyzer.AnalyzeImageDetailed(capturedMat, TrackingConfidenceThreshold, TrackingIouThreshold);
-                    var target = SelectTrackingTarget(analysis.Detections, capturedMat.Width / 2f, capturedMat.Height / 2f);
-
-                    using var previewMat = analyzer.CreateAnnotatedImage(capturedMat, analysis.Detections);
-                    UpdateDetectionPreview(previewMat);
-
-                    if (target is not null)
-                    {
-                        var targetCenterX = (target.X1 + target.X2) / 2f;
-                        var targetCenterY = (target.Y1 + target.Y2) / 2f;
-                        var cropCenterX = capturedMat.Width / 2f;
-                        var cropCenterY = capturedMat.Height / 2f;
-                        var deltaX = targetCenterX - cropCenterX;
-                        var deltaY = targetCenterY - cropCenterY;
-
-                        if (Math.Abs(deltaX) > TrackingDeadzonePixels || Math.Abs(deltaY) > TrackingDeadzonePixels)
+                        using var capturedMat = OpenCvSharp.Cv2.ImDecode(bmpBytes, OpenCvSharp.ImreadModes.Color);
+                        if (capturedMat.Empty())
                         {
-                            var moveX = (int)Math.Round(deltaX * TrackingMoveScale);
-                            var moveY = (int)Math.Round(deltaY * TrackingMoveScale);
-                            await _olaWorker.MoveRelativeAsync(moveX, moveY);
+                            await Task.Delay(TrackingLoopDelayMs, cancellationToken);
+                            continue;
                         }
+
+                        var analysis = analyzer.AnalyzeImageDetailed(capturedMat, TrackingConfidenceThreshold, TrackingIouThreshold);
+                        var target = SelectTrackingTarget(analysis.Detections, capturedMat.Width / 2f, capturedMat.Height / 2f);
+
+                        var now = Environment.TickCount64;
+                        if (now - lastPreviewTick >= TrackingPreviewIntervalMs)
+                        {
+                            using var previewMat = analyzer.CreateAnnotatedImage(capturedMat, analysis.Detections);
+                            UpdateDetectionPreview(previewMat);
+                            lastPreviewTick = now;
+                        }
+
+                        if (target is not null)
+                        {
+                            var targetCenterX = (target.X1 + target.X2) / 2f;
+                            var targetCenterY = (target.Y1 + target.Y2) / 2f;
+                            var cropCenterX = capturedMat.Width / 2f;
+                            var cropCenterY = capturedMat.Height / 2f;
+                            var deltaX = targetCenterX - cropCenterX;
+                            var deltaY = targetCenterY - cropCenterY;
+
+                            if (Math.Abs(deltaX) > TrackingDeadzonePixels || Math.Abs(deltaY) > TrackingDeadzonePixels)
+                            {
+                                var currentCursor = await _olaWorker.GetBoundCursorPosAsync();
+                                var targetCursorX = currentCursor.X + (int)Math.Round(deltaX * TrackingMoveScale);
+                                var targetCursorY = currentCursor.Y + (int)Math.Round(deltaY * TrackingMoveScale);
+                                targetCursorX = Math.Clamp(targetCursorX, 0, Math.Max(0, clientSize.Width - 1));
+                                targetCursorY = Math.Clamp(targetCursorY, 0, Math.Max(0, clientSize.Height - 1));
+                                await _olaWorker.MoveToAsync(targetCursorX, targetCursorY);
+                            }
+                        }
+                    }
+                    catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+                    {
+                        AppendOutput($"追踪循环异常: {ex.Message}");
+                        await Task.Delay(60, cancellationToken);
                     }
 
                     await Task.Delay(TrackingLoopDelayMs, cancellationToken);

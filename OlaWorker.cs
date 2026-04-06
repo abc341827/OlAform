@@ -85,6 +85,22 @@ namespace OlAform
             });
         }
 
+        public Task<Point> GetBoundCursorPosAsync()
+        {
+            return InvokeAsync(() =>
+            {
+                ThrowIfNotBound();
+
+                var result = _ola!.GetCursorPos(out var x, out var y);
+                if (result != 1)
+                {
+                    throw new InvalidOperationException($"获取绑定窗口鼠标位置失败。ErrorId={_ola.GetLastError()}, Error={_ola.GetLastErrorString()}");
+                }
+
+                return new Point(x, y);
+            });
+        }
+
         public Task LeftClickAsync(int x, int y)
         {
             return InvokeAsync(() =>
