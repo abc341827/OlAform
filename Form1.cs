@@ -10,7 +10,7 @@ namespace OlAform
         private const float TrackingIouThreshold = 0.45f;
         private const float TrackingMoveScale = 0.65f;
         private const int TrackingDeadzonePixels = 3;
-        private const int TrackingLoopDelayMs = 12;
+        private const int TrackingLoopDelayMs = 30;
         private const int TrackingPreviewIntervalMs = 80;
         private readonly List<WorkflowNode> _workflowRoots = new();
         private readonly List<ActionTemplate> _availableActionTemplates = new();
@@ -1494,6 +1494,7 @@ namespace OlAform
         {
             var wasTrackingActive = false;
             var lastPreviewTick = Environment.TickCount64;
+            var captureFilePath = Path.Combine(AppContext.BaseDirectory, "tracking-capture.bmp");
 
             try
             {
@@ -1524,9 +1525,9 @@ namespace OlAform
                     {
                         var clientSize = await _olaWorker.GetBoundWindowClientSizeAsync();
                         var captureBounds = GetCenteredCaptureBounds(clientSize, TrackingRegionSize);
-                        var bmpBytes = await _olaWorker.CaptureBmpBytesAsync(captureBounds.Left, captureBounds.Top, captureBounds.Right, captureBounds.Bottom);
+                        await _olaWorker.CaptureAsync(captureBounds.Left, captureBounds.Top, captureBounds.Right, captureBounds.Bottom, captureFilePath);
 
-                        using var capturedMat = OpenCvSharp.Cv2.ImDecode(bmpBytes, OpenCvSharp.ImreadModes.Color);
+                        using var capturedMat = OpenCvSharp.Cv2.ImRead(captureFilePath, OpenCvSharp.ImreadModes.Color);
                         if (capturedMat.Empty())
                         {
                             await Task.Delay(TrackingLoopDelayMs, cancellationToken);
@@ -1582,6 +1583,17 @@ namespace OlAform
             }
             finally
             {
+                try
+                {
+                    if (File.Exists(captureFilePath))
+                    {
+                        File.Delete(captureFilePath);
+                    }
+                }
+                catch
+                {
+                }
+
                 BeginInvoke(() => StopTracking(waitForCompletion: false));
             }
         }
