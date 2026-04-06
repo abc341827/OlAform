@@ -8,8 +8,10 @@ namespace OlAform
         private const int TrackingRegionSize = 400;
         private const float TrackingConfidenceThreshold = 0.25f;
         private const float TrackingIouThreshold = 0.45f;
-        private const float TrackingMoveScale = 0.65f;
-        private const int TrackingDeadzonePixels = 3;
+        private const float TrackingAimGain = 0.18f;
+        private const int TrackingMaxStepPixels = 18;
+        private const int TrackingMinStepPixels = 1;
+        private const int TrackingDeadzonePixels = 6;
         private const int TrackingLoopDelayMs = 30;
         private const int TrackingPreviewIntervalMs = 80;
         private readonly List<WorkflowNode> _workflowRoots = new();
@@ -1495,6 +1497,8 @@ namespace OlAform
             var wasTrackingActive = false;
             var lastPreviewTick = Environment.TickCount64;
             var captureFilePath = Path.Combine(AppContext.BaseDirectory, "tracking-capture.bmp");
+            var residualMoveX = 0f;
+            var residualMoveY = 0f;
 
             try
             {
@@ -1556,13 +1560,24 @@ namespace OlAform
 
                             if (Math.Abs(deltaX) > TrackingDeadzonePixels || Math.Abs(deltaY) > TrackingDeadzonePixels)
                             {
-                                var currentCursor = await _olaWorker.GetBoundCursorPosAsync();
-                                var targetCursorX = currentCursor.X + (int)Math.Round(deltaX * TrackingMoveScale);
-                                var targetCursorY = currentCursor.Y + (int)Math.Round(deltaY * TrackingMoveScale);
-                                targetCursorX = Math.Clamp(targetCursorX, 0, Math.Max(0, clientSize.Width - 1));
-                                targetCursorY = Math.Clamp(targetCursorY, 0, Math.Max(0, clientSize.Height - 1));
-                                await _olaWorker.MoveToAsync(targetCursorX, targetCursorY);
+                                var moveX = ComputeTrackingStep(deltaX, ref residualMoveX);
+                                var moveY = ComputeTrackingStep(deltaY, ref residualMoveY);
+
+                                if (moveX != 0 || moveY != 0)
+                                {
+                                    await _olaWorker.MoveRelativeAsync(moveX, moveY);
+                                }
                             }
+                            else
+                            {
+                                residualMoveX = 0f;
+                                residualMoveY = 0f;
+                            }
+                        }
+                        else
+                        {
+                            residualMoveX = 0f;
+                            residualMoveY = 0f;
                         }
                     }
                     catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
@@ -1613,6 +1628,21 @@ namespace OlAform
                 .OrderBy(detection => Math.Sqrt(Math.Pow(((detection.X1 + detection.X2) / 2f) - centerX, 2) + Math.Pow(((detection.Y1 + detection.Y2) / 2f) - centerY, 2)))
                 .ThenByDescending(detection => detection.Confidence)
                 .FirstOrDefault();
+        }
+
+        private static int ComputeTrackingStep(float deltaPixels, ref float residual)
+        {
+            var desired = (deltaPixels * TrackingAimGain) + residual;
+            desired = Math.Clamp(desired, -TrackingMaxStepPixels, TrackingMaxStepPixels);
+
+            var step = (int)Math.Truncate(desired);
+            if (step == 0 && Math.Abs(desired) >= TrackingMinStepPixels)
+            {
+                step = Math.Sign(desired) * TrackingMinStepPixels;
+            }
+
+            residual = desired - step;
+            return step;
         }
 
         private void UpdateDetectionPreview(OpenCvSharp.Mat image)

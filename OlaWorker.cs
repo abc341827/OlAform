@@ -440,7 +440,7 @@ namespace OlAform
                 throw new InvalidOperationException($"注册失败。ErrorId={_ola.GetLastError()}, Error={_ola.GetLastErrorString()}");
             }
 
-            _ola.SetConfig($"{{\"WorkPath\":\"\",\"DbPath\":\"\",\"DbPassword\":\"\",\"InputLock\":true,\"EnableRealKeypad\":true,\"KeyDownInterval\":100,\"MouseClickInterval\":100,\"MouseDoubleClickInterval\":100,\"VncServer\":\"127.0.0.1\",\"VncPort\":\"5900\",\"VncPassword\":\"\",\"SimModeType\":0,\"UseAbsoluteMove\":true,\"EnableRealMouse\":true,\"RealMouseMode\":1,\"MinMouseTrajectory\":50,\"RealMouseBaseTimePer100Pixels\":200,\"RealMouseFlowFlag\":767,\"RealMouseNoise\":5.0,\"RealMouseDeviation\":25,\"RealMouseMinSteps\":150,\"RealMouseTimeToSteps\":1.5,\"RealMouseOvershoots\":3,\"MouseDriftCheckTime\":0,\"MaxOverlap\":0.5,\"MatchColorWeight\":0.7,\"CheckDisplayDeadInterval\":50,\"KeyboardHwnd\":0,\"MouseHwnd\":0}}");
+            _ola.SetConfig($"{{\"WorkPath\":\"\",\"DbPath\":\"\",\"DbPassword\":\"\",\"InputLock\":true,\"EnableRealKeypad\":true,\"KeyDownInterval\":100,\"MouseClickInterval\":100,\"MouseDoubleClickInterval\":100,\"VncServer\":\"127.0.0.1\",\"VncPort\":\"5900\",\"VncPassword\":\"\",\"SimModeType\":0,\"UseAbsoluteMove\":false,\"EnableRealMouse\":true,\"RealMouseMode\":1,\"MinMouseTrajectory\":8,\"RealMouseBaseTimePer100Pixels\":45,\"RealMouseFlowFlag\":767,\"RealMouseNoise\":1.2,\"RealMouseDeviation\":6,\"RealMouseMinSteps\":24,\"RealMouseTimeToSteps\":1.0,\"RealMouseOvershoots\":0,\"MouseDriftCheckTime\":0,\"MaxOverlap\":0.5,\"MatchColorWeight\":0.7,\"CheckDisplayDeadInterval\":50,\"KeyboardHwnd\":0,\"MouseHwnd\":0}}");
 
             _version = _ola.Ver();
             _isInitialized = true;
