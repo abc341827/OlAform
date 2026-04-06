@@ -55,7 +55,13 @@ namespace OlAform
                     _isBound = false;
                 }
 
-                var result = _ola!.BindWindow(targetWindowHandle, "normal", "dx.mouse.api|dx.mouse.cursor", "dx.keypad.api", 0);
+                var result = _ola!.BindWindowEx(
+                    targetWindowHandle,
+                    "normal",
+                    "dx.mouse.api|dx.mouse.cursor|dx.mouse.raw.input|dx.mouse.raw.input.active",
+                    "dx.keypad.api|dx.keypad.raw.input|dx.keypad.raw.input.active",
+                    "dx.public.active.api",
+                    0);
                 if (result != 1)
                 {
                     throw new InvalidOperationException($"绑定失败。ErrorId={_ola.GetLastError()}, Error={_ola.GetLastErrorString()}");
