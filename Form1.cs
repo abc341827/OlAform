@@ -80,7 +80,7 @@ namespace OlAform
             if (_isTrackingArmed)
             {
                 StopTracking(waitForCompletion: false);
-                AppendOutput("目标追踪已手动停止。");
+                AppendOutput("目标追踪监控已手动停止。");
                 return;
             }
 
@@ -95,7 +95,7 @@ namespace OlAform
                 }
 
                 StartTracking(modelPath);
-                AppendOutput("目标追踪已就绪。按住鼠标左键开始，松开左键自动停止。");
+                AppendOutput("目标追踪监控已启动。按住鼠标左键时执行检测和移动；松开左键仅暂停，点击按钮可手动停止监控。");
             }
             catch (Exception ex)
             {
@@ -1491,24 +1491,33 @@ namespace OlAform
 
         private async Task RunTrackingLoopAsync(string modelPath, CancellationToken cancellationToken)
         {
+            var wasTrackingActive = false;
+
             try
             {
                 using var analyzer = new YoloOnnxImageAnalyzer(modelPath);
 
-                while (!cancellationToken.IsCancellationRequested && !NativeMethods.IsLeftMouseButtonDown())
+                while (!cancellationToken.IsCancellationRequested)
                 {
-                    await Task.Delay(TrackingLoopDelayMs, cancellationToken);
-                }
+                    var isLeftButtonDown = NativeMethods.IsLeftMouseButtonDown();
+                    if (!isLeftButtonDown)
+                    {
+                        if (wasTrackingActive)
+                        {
+                            wasTrackingActive = false;
+                            AppendOutput("鼠标左键已弹起，目标追踪暂停，等待下一次按下。");
+                        }
 
-                if (cancellationToken.IsCancellationRequested)
-                {
-                    return;
-                }
+                        await Task.Delay(TrackingLoopDelayMs, cancellationToken);
+                        continue;
+                    }
 
-                AppendOutput("检测到左键按下，开始后台目标追踪。");
+                    if (!wasTrackingActive)
+                    {
+                        wasTrackingActive = true;
+                        AppendOutput("检测到左键按下，开始后台目标追踪。");
+                    }
 
-                while (!cancellationToken.IsCancellationRequested && NativeMethods.IsLeftMouseButtonDown())
-                {
                     var clientSize = await _olaWorker.GetBoundWindowClientSizeAsync();
                     var captureBounds = GetCenteredCaptureBounds(clientSize, TrackingRegionSize);
                     var bmpBytes = await _olaWorker.CaptureBmpBytesAsync(captureBounds.Left, captureBounds.Top, captureBounds.Right, captureBounds.Bottom);
@@ -1545,8 +1554,6 @@ namespace OlAform
 
                     await Task.Delay(TrackingLoopDelayMs, cancellationToken);
                 }
-
-                AppendOutput("鼠标左键已弹起，后台目标追踪停止。");
             }
             catch (OperationCanceledException)
             {

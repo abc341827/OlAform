@@ -55,7 +55,7 @@ namespace OlAform
                     _isBound = false;
                 }
 
-                var result = _ola!.BindWindow(targetWindowHandle, "normal", "dx.mouse.position.lock.api|dx.mouse.position.lock.message|dx.mouse.clip.lock.api|dx.mouse.input.lock.api|dx.mouse.state.api|dx.mouse.api|dx.mouse.cursor", "dx.keypad.input.lock.api|dx.keypad.state.api|dx.keypad.api", 0);
+                var result = _ola!.BindWindow(targetWindowHandle, "normal", "dx.mouse.api|dx.mouse.cursor", "dx.keypad.api", 0);
                 if (result != 1)
                 {
                     throw new InvalidOperationException($"绑定失败。ErrorId={_ola.GetLastError()}, Error={_ola.GetLastErrorString()}");
