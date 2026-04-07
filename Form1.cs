@@ -57,6 +57,7 @@ namespace OlAform
 
         private void Form1_Load(object? sender, EventArgs e)
         {
+            NativeMethods.StartMouseHook();
             LoadProjectList();
             UpdateBindingStatus();
             RefreshWorkflowTree();
@@ -71,6 +72,7 @@ namespace OlAform
                 _highlightOverlay.Close();
                 StopTracking(waitForCompletion: false);
                 _picDetectionPreview.Image?.Dispose();
+                NativeMethods.StopMouseHook();
                 _olaWorker.Dispose();
             }
             catch
