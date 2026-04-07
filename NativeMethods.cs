@@ -7,6 +7,7 @@ namespace OlAform
     {
         public const uint GA_ROOT = 2;
         private const int VK_LBUTTON = 0x01;
+        private const uint MOUSEEVENTF_MOVE = 0x0001;
 
         [StructLayout(LayoutKind.Sequential)]
         public struct POINT
@@ -46,9 +47,27 @@ namespace OlAform
         [DllImport("user32.dll")]
         private static extern short GetAsyncKeyState(int vKey);
 
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, nuint dwExtraInfo);
+
         public static bool IsLeftMouseButtonDown()
         {
             return (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+        }
+
+        public static void MoveMouseRelative(int deltaX, int deltaY)
+        {
+            if (deltaX == 0 && deltaY == 0)
+            {
+                return;
+            }
+
+            mouse_event(
+                MOUSEEVENTF_MOVE,
+                unchecked((uint)deltaX),
+                unchecked((uint)deltaY),
+                0,
+                0);
         }
     }
 }

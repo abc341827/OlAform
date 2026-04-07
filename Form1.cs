@@ -1565,7 +1565,7 @@ namespace OlAform
 
                                 if (moveX != 0 || moveY != 0)
                                 {
-                                    await _olaWorker.MoveRelativeAsync(moveX, moveY);
+                                    NativeMethods.MoveMouseRelative(moveX, moveY);
                                 }
                             }
                             else
